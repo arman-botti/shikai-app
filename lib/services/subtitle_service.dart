@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shikai_app/services/stream_service.dart';
+import 'package:shikai_app/services/security_vault.dart';
 
 class SubtitleCue {
   final double start;
@@ -603,7 +604,7 @@ class SubtitleService {
     if (effectiveUrl.startsWith('//')) {
       effectiveUrl = 'https:$effectiveUrl';
     } else if (effectiveUrl.startsWith('/api/')) {
-      effectiveUrl = 'https://shikai.biz$effectiveUrl';
+      effectiveUrl = '${SecurityVault.shikaiBase}$effectiveUrl';
     }
 
     // -----------------------------------------------------------------------
@@ -633,7 +634,7 @@ class SubtitleService {
     // -----------------------------------------------------------------------
     try {
       final cleanLang = lang.replaceAll('-ai', '').replaceAll('-signs', '');
-      final converterUrl = 'https://shikai.biz/api/subtitles/vtt?url=${Uri.encodeComponent(effectiveUrl)}&lang=$cleanLang';
+      final converterUrl = '${SecurityVault.shikaiBase}/api/subtitles/vtt?url=${Uri.encodeComponent(effectiveUrl)}&lang=$cleanLang';
 
       final res = await http.get(
         Uri.parse(converterUrl),

@@ -8,7 +8,7 @@ import 'package:shikai_app/services/stream_service.dart';
 /// Integrates AniList, Anivexa (HD-2/HD-1), and Miruro (Smart Fallback).
 /// Strictly ensures single unified entries without duplicate cards (e.g. 1 unified JJK, Pokemon through Miruro).
 class AnimeAggregatorService {
-  static const String shikaiBaseUrl = StreamService.shikaiBaseUrl;
+  static String get shikaiBaseUrl => StreamService.shikaiBaseUrl;
 
   /// Normalize anime title string for robust duplicate matching across sources
   static String normalizeTitle(String title) {

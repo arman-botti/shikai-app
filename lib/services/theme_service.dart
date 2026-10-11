@@ -19,58 +19,36 @@ class ThemeService {
   static const Color textDarkMuted = Color(0xFF71717A);    // Zinc 500
 
   // Brand Accents
-  static const Color seanimePurple = Color(0xFF6152DF);    // Seanime Tenji Official Brand Purple
-  static const Color crimson = Color(0xFFFF1F5A);          // Shikai Signature Crimson
-  static const Color cyan = Color(0xFF00D2FF);             // Getsuga Cyan
+  static const Color crimson = Color(0xFFE50914);          // Shikai Signature Crimson Red
+  static const Color seanimePurple = Color(0xFF6152DF);
+  static const Color cyan = Color(0xFF00D2FF);
 
-  static final ValueNotifier<Color> accentColor = ValueNotifier<Color>(seanimePurple);
-  static final ValueNotifier<String> themeName = ValueNotifier<String>('seanime');
+  static final ValueNotifier<Color> accentColor = ValueNotifier<Color>(crimson);
+  static final ValueNotifier<String> themeName = ValueNotifier<String>('crimson');
 
-  static Color get currentAccent => accentColor.value;
+  static Color get currentAccent => crimson;
 
   static Future<void> init() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getString(_themeKey) ?? 'seanime';
-      setTheme(saved);
+      // Permanently lock Crimson Red as the app theme
+      await prefs.setString(_themeKey, 'crimson');
+      setTheme('crimson');
     } catch (_) {}
   }
 
   static void setTheme(String name) async {
-    themeName.value = name;
-    if (name == 'crimson') {
-      accentColor.value = crimson;
-    } else if (name == 'cyan') {
-      accentColor.value = cyan;
-    } else {
-      accentColor.value = seanimePurple;
-      themeName.value = 'seanime';
-    }
-
+    themeName.value = 'crimson';
+    accentColor.value = crimson;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_themeKey, themeName.value);
+      await prefs.setString(_themeKey, 'crimson');
     } catch (_) {}
   }
 
   static void cycleTheme() {
-    if (themeName.value == 'seanime') {
-      setTheme('crimson');
-    } else if (themeName.value == 'crimson') {
-      setTheme('cyan');
-    } else {
-      setTheme('seanime');
-    }
+    setTheme('crimson');
   }
 
-  static String get themeLabel {
-    switch (themeName.value) {
-      case 'crimson':
-        return 'SHIKAI (CRIMSON)';
-      case 'cyan':
-        return 'GETSUGA (CYAN)';
-      default:
-        return 'SEANIME (PURPLE)';
-    }
-  }
+  static String get themeLabel => 'SHIKAI (CRIMSON RED)';
 }

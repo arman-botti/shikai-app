@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:shikai_app/services/local_proxy/local_proxy.dart';
 import 'package:shikai_app/services/anivexa_service.dart';
 import 'package:shikai_app/services/subtitle_service.dart';
+import 'package:shikai_app/services/security_vault.dart';
 
 class StreamSource {
   final String id;
@@ -95,8 +96,8 @@ class SubtitleTrack {
 }
 
 class StreamService {
-  /// The official Shikai production backend & proxy gateway
-  static const String shikaiBaseUrl = 'https://shikai.biz';
+  /// The official Shikai production backend & proxy gateway (Cryptographically Shielded)
+  static String get shikaiBaseUrl => SecurityVault.shikaiBase;
 
   /// In-App Client-Side Proxy Engine (0% Oracle VM Bandwidth)
   static final LocalStreamingProxyInterface localProxy = getLocalStreamingProxy();
@@ -111,7 +112,7 @@ class StreamService {
 
     String resolved = upstreamUrl;
     if (!resolved.startsWith('http')) {
-      resolved = '$shikaiBaseUrl${resolved.startsWith('/') ? '' : '/'}$resolved';
+      resolved = '${SecurityVault.shikaiBase}${resolved.startsWith('/') ? '' : '/'}$resolved';
     }
 
     // Direct MP4 videos bypass HLS proxy
@@ -126,8 +127,8 @@ class StreamService {
     }
 
     // Fallback if local proxy server not running
-    if ((resolved.contains('/api/anivexa/stream/') ||
-         resolved.contains('/api/miruro/stream/')) &&
+    if ((resolved.contains(SecurityVault.anivexaStreamPath) ||
+         resolved.contains(SecurityVault.miruroStreamPath)) &&
         !resolved.contains('.m3u8')) {
       resolved = resolved.replaceFirstMapped(
         RegExp(r'(/api/[a-z0-9_-]+/stream/\d+/\d+)'),
@@ -141,7 +142,7 @@ class StreamService {
   /// Check Hindi dub availability for an anime on DesiDub
   static Future<bool> checkHindiAvailability(int anilistId) async {
     try {
-      final res = await http.get(Uri.parse('$shikaiBaseUrl/api/desidub/availability/$anilistId')).timeout(const Duration(milliseconds: 900));
+      final res = await http.get(Uri.parse('${SecurityVault.shikaiBase}${SecurityVault.desidubAvailPath}$anilistId')).timeout(const Duration(milliseconds: 900));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         return data['available'] == true;
@@ -153,14 +154,14 @@ class StreamService {
   /// Fetch subtitles from Shikai production API
   static Future<List<SubtitleTrack>> fetchSubtitles(int anilistId, int episode) async {
     try {
-      final res = await http.get(Uri.parse('$shikaiBaseUrl/api/subtitles/$anilistId/$episode')).timeout(const Duration(seconds: 6));
+      final res = await http.get(Uri.parse('${SecurityVault.shikaiBase}${SecurityVault.subtitlesPath}$anilistId/$episode')).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (data['subtitles'] != null && data['subtitles'] is List) {
           return (data['subtitles'] as List).map((s) {
             String url = s['url'] ?? s['file'] ?? '';
             if (url.isNotEmpty && !url.startsWith('http')) {
-              url = '$shikaiBaseUrl${url.startsWith('/') ? '' : '/'}$url';
+              url = '${SecurityVault.shikaiBase}${url.startsWith('/') ? '' : '/'}$url';
             }
             return SubtitleTrack(
               url: url,
@@ -270,7 +271,7 @@ class StreamService {
       streamUrl: anizoneWatch?.streamUrl.isNotEmpty == true
           ? anizoneWatch!.streamUrl
           : '$shikaiBaseUrl/api/anivexa/stream/$anilistId/$episode.m3u8?server=anizone&audio=$audio&title=$encodedTitle',
-      referer: 'https://anizone.to/',
+      referer: SecurityVault.anizoneReferer,
       quality: '1080p / 720p Adaptive',
       audioType: audio == 'dub' ? 'English Dub' : 'Japanese Sub',
       subtitles: effectiveSubs,
@@ -289,7 +290,7 @@ class StreamService {
       serverName: 'Tsukuyomi (HD-2 Direct)',
       streamUrl: server1Url,
       playlistKey: playlistKey,
-      referer: 'https://flixcloud.cc/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Direct Master',
       audioType: audio == 'dub' ? 'English Dub' : 'Japanese Sub',
       subtitles: effectiveSubs,
@@ -308,7 +309,7 @@ class StreamService {
       serverName: 'Kamui (HD-1 Fast)',
       streamUrl: '$shikaiBaseUrl/api/anivexa/stream/$anilistId/$episode.m3u8?server=hd1&audio=$audio&title=$encodedTitle',
       playlistKey: playlistKey,
-      referer: 'https://flixcloud.cc/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Fast Mirror',
       audioType: audio == 'dub' ? 'English Dub' : 'Japanese Sub',
       subtitles: effectiveSubs,
@@ -326,7 +327,7 @@ class StreamService {
       id: 'miruro',
       serverName: 'Rinnegan (Global HD)',
       streamUrl: '$shikaiBaseUrl/api/miruro/stream/$anilistId/$episode.m3u8?audio=$audio&title=$encodedTitle',
-      referer: 'https://www.miruro.tv/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Global Direct',
       audioType: audio == 'dub' ? 'English Dub' : 'Japanese Sub',
       subtitles: effectiveSubs,
@@ -341,7 +342,7 @@ class StreamService {
         id: 'desidub',
         serverName: 'Chidori (Hindi Dub 🇮🇳)',
         streamUrl: '$shikaiBaseUrl/api/desidub/stream/$anilistId/$episode',
-        referer: 'https://vidmoly.net/',
+        referer: SecurityVault.vidmolyReferer,
         quality: '720p HD Hindi',
         audioType: 'Hindi Dub',
         subtitles: [],
@@ -355,8 +356,8 @@ class StreamService {
     sources.add(StreamSource(
       id: 'backup',
       serverName: 'Zangetsu (Backup Mirror)',
-      streamUrl: 'https://cdn.4animo.xyz/embed/hd-1/$anilistId/$audio?k=1',
-      referer: 'https://zangetsu.cc/',
+      streamUrl: '$shikaiBaseUrl/api/anivexa/stream/$anilistId/$episode.m3u8?server=hd2&audio=$audio&title=$encodedTitle',
+      referer: SecurityVault.zangetsuReferer,
       quality: '1080p Clean',
       audioType: audio == 'dub' ? 'Dub' : 'Sub',
       subtitles: effectiveSubs,

@@ -93,11 +93,31 @@ class WatchHistoryService {
       final encoded = jsonEncode(historyList.map((e) => e.toJson()).toList());
       await prefs.setString(_historyKey, encoded);
 
+      // Store exact per-episode playback progress string: "positionSeconds:durationSeconds"
+      final epTimeKey = 'shikai_ep_time_${anilistId}_$episodeNumber';
+      await prefs.setString(epTimeKey, '$positionSeconds:$durationSeconds');
+
       // Mark episode as watched if past 60s or 50%
       if (positionSeconds > 60) {
         await markEpisodeWatched(anilistId, episodeNumber);
       }
     } catch (_) {}
+  }
+
+  /// Get exact playback progress for an episode (returns [positionSeconds, durationSeconds])
+  static Future<List<int>?> getEpisodeProgress(int anilistId, int episodeNumber) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final epTimeKey = 'shikai_ep_time_${anilistId}_$episodeNumber';
+      final val = prefs.getString(epTimeKey);
+      if (val != null && val.contains(':')) {
+        final parts = val.split(':');
+        final pos = int.tryParse(parts[0]) ?? 0;
+        final dur = int.tryParse(parts[1]) ?? 0;
+        return [pos, dur];
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Get list of continue watching items sorted by most recently watched

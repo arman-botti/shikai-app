@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shikai_app/services/security_vault.dart';
 
 class UpdateInfo {
   final String latestVersion;
@@ -24,11 +25,11 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  static const String currentVersion = '1.0.0';
-  static const int currentBuildNumber = 1;
+  static const String currentVersion = '1.0.10';
+  static const int currentBuildNumber = 11;
   static const String githubOwner = 'arman-botti';
   static const String githubRepo = 'shikai-app';
-  static const String fallbackVersionUrl = 'https://shikai.biz/api/app/version';
+  static String get fallbackVersionUrl => '${SecurityVault.shikaiBase}/api/app/version';
 
   static const MethodChannel _updaterChannel = MethodChannel('biz.shikai.app/updater');
 

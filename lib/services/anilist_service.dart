@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/models/airing_schedule_item.dart';
+import 'package:shikai_app/models/media_relation.dart';
 
 class AnilistService {
   static const String endpoint = 'https://graphql.anilist.co';
@@ -69,17 +70,27 @@ class AnilistService {
   }
 
   static Future<List<AnilistMedia>> getAnimeByGenre(String genre, {int page = 1, int perPage = 20}) async {
-    const query = '''
-      query (\$genre: String, \$page: Int, \$perPage: Int) {
+    final bool isTag = (genre == 'Isekai');
+    final String varDef = isTag ? '\$tag: String' : '\$genre: String';
+    final String filterClause = isTag ? 'tag: \$tag' : 'genre: \$genre';
+    final Map<String, dynamic> variables = {'page': page, 'perPage': perPage};
+    if (isTag) {
+      variables['tag'] = 'Isekai';
+    } else {
+      variables['genre'] = genre;
+    }
+
+    final query = '''
+      query ($varDef, \$page: Int, \$perPage: Int) {
         Page(page: \$page, perPage: \$perPage) {
-          media(genre: \$genre, sort: POPULARITY_DESC, type: ANIME, isAdult: false) {
+          media($filterClause, sort: POPULARITY_DESC, type: ANIME, isAdult: false) {
             $_mediaFragment
           }
         }
       }
     ''';
 
-    return _fetchMediaList(query, {'genre': genre, 'page': page, 'perPage': perPage});
+    return _fetchMediaList(query, variables);
   }
 
   static Future<List<AnilistMedia>> searchAnime(String search, {int page = 1, int perPage = 20}) async {
@@ -240,9 +251,15 @@ class AnilistService {
     }
 
     if (genre != null && genre != 'All') {
-      varDefs.add('\$genre: String');
-      mediaArgs.add('genre: \$genre');
-      variables['genre'] = genre;
+      if (genre == 'Isekai') {
+        varDefs.add('\$tag: String');
+        mediaArgs.add('tag: \$tag');
+        variables['tag'] = 'Isekai';
+      } else {
+        varDefs.add('\$genre: String');
+        mediaArgs.add('genre: \$genre');
+        variables['genre'] = genre;
+      }
     }
 
     if (status != null && status != 'All') {
@@ -293,19 +310,116 @@ class AnilistService {
     return null;
   }
 
+  static Future<List<MediaRelation>> getAnimeRelations(int id) async {
+    const query = '''
+      query (\$id: Int) {
+        Media(id: \$id) {
+          relations {
+            edges {
+              id
+              relationType
+              node {
+                id
+                type
+                format
+                status
+                episodes
+                averageScore
+                title {
+                  romaji
+                  english
+                }
+                coverImage {
+                  extraLarge
+                  large
+                  medium
+                }
+                bannerImage
+                description
+                genres
+                countryOfOrigin
+              }
+            }
+          }
+        }
+      }
+    ''';
+
+    try {
+      final response = await http.post(
+        Uri.parse(endpoint),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'query': query, 'variables': {'id': id}}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List<dynamic>? edges = data['data']?['Media']?['relations']?['edges'];
+        if (edges != null) {
+          final List<MediaRelation> list = [];
+          for (final edge in edges) {
+            try {
+              final rel = MediaRelation.fromJson(edge);
+              // Include valid anime and manga adaptations with cover images
+              if (rel.media.format != 'MUSIC' &&
+                  rel.media.id != 0 &&
+                  rel.media.coverImage.isNotEmpty) {
+                list.add(rel);
+              }
+            } catch (_) {}
+          }
+          list.sort((a, b) => a.priority.compareTo(b.priority));
+          return list;
+        }
+      }
+    } catch (e) {
+      print('AnilistService getAnimeRelations error: \$e');
+    }
+    return [];
+  }
+
+  /// In-memory cache for anime queries to prevent empty screen on rate-limits or tab switches
+  static final Map<String, List<AnilistMedia>> _animeQueryCache = {};
+
   static Future<List<AnilistMedia>> _fetchMediaList(String query, Map<String, dynamic> variables) async {
+    final cacheKey = '$query#${jsonEncode(variables)}';
+
     try {
       final response = await http.post(
         Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'query': query, 'variables': variables}),
-      );
+      ).timeout(const Duration(seconds: 9));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final List<dynamic>? mediaList = data['data']?['Page']?['media'];
         if (mediaList != null) {
-          return mediaList.map((m) => AnilistMedia.fromJson(m)).toList();
+          final results = mediaList.map((m) => AnilistMedia.fromJson(m)).toList();
+          if (results.isNotEmpty) {
+            _animeQueryCache[cacheKey] = results;
+          }
+          return results;
+        }
+      } else if (response.statusCode == 429) {
+        // Rate limited: wait 1.2s and retry
+        await Future.delayed(const Duration(milliseconds: 1200));
+        final retry = await http.post(
+          Uri.parse(endpoint),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'query': query, 'variables': variables}),
+        ).timeout(const Duration(seconds: 8));
+
+        if (retry.statusCode == 200) {
+          final data = jsonDecode(retry.body);
+          final List<dynamic>? mediaList = data['data']?['Page']?['media'];
+          if (mediaList != null) {
+            final results = mediaList.map((m) => AnilistMedia.fromJson(m)).toList();
+            if (results.isNotEmpty) {
+              _animeQueryCache[cacheKey] = results;
+            }
+            return results;
+          }
         }
       } else {
         print('Anilist error: HTTP ${response.statusCode} - ${response.body}');
@@ -313,6 +427,12 @@ class AnilistService {
     } catch (e) {
       print('AnilistService error: \$e');
     }
+
+    // Fallback to cache if available
+    if (_animeQueryCache.containsKey(cacheKey)) {
+      return _animeQueryCache[cacheKey]!;
+    }
+
     return [];
   }
 }

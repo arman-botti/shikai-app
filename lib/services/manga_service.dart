@@ -462,19 +462,67 @@ class MangaService {
     return _fetchMangaList(query, {'page': page, 'perPage': perPage});
   }
 
-  /// Filter manga by genre (with optional category filter)
+  /// Filter manga by genre or specialized tag (with optional category filter)
   static Future<List<AnilistMedia>> getMangaByGenre(String genre, {String category = 'All', int page = 1, int perPage = 20}) async {
     final countryFilter = _buildCountryArgs(category);
+
+    const standardGenres = {
+      'Action', 'Adventure', 'Comedy', 'Drama', 'Ecchi', 'Fantasy', 'Horror',
+      'Mystery', 'Psychological', 'Romance', 'Sci-Fi', 'Slice of Life', 'Supernatural', 'Thriller'
+    };
+
+    final tagMapping = {
+      'Murim': 'Martial Arts',
+      'Martial Arts': 'Martial Arts',
+      'Cultivation': 'Cultivation',
+      'Xianxia': 'Cultivation',
+      'Wuxia': 'Wuxia',
+      'Leveling': 'Dungeon',
+      'System': 'Dungeon',
+      'Dungeon': 'Dungeon',
+      'Regression': 'Time Manipulation',
+      'Reincarnation': 'Reincarnation',
+      'Rebirth': 'Reincarnation',
+      'Villainess': 'Villainess',
+      'Otome': 'Villainess',
+      'Revenge': 'Revenge',
+      'Shonen': 'Shounen',
+      'Shounen': 'Shounen',
+      'Seinen': 'Seinen',
+      'Isekai': 'Isekai',
+      'Urban': 'Urban Fantasy',
+      'Dark Fantasy': 'Fantasy',
+    };
+
+    final mappedTag = tagMapping[genre];
+    final String varDef;
+    final String filterClause;
+    final Map<String, dynamic> variables = {'page': page, 'perPage': perPage};
+
+    if (mappedTag != null) {
+      varDef = '\$tag: String';
+      filterClause = 'tag: \$tag';
+      variables['tag'] = mappedTag;
+    } else if (standardGenres.contains(genre)) {
+      varDef = '\$genre: String';
+      filterClause = 'genre: \$genre';
+      variables['genre'] = genre;
+    } else {
+      varDef = '\$tag: String';
+      filterClause = 'tag: \$tag';
+      variables['tag'] = genre;
+    }
+
     final query = '''
-      query (\$genre: String, \$page: Int, \$perPage: Int) {
+      query ($varDef, \$page: Int, \$perPage: Int) {
         Page(page: \$page, perPage: \$perPage) {
-          media(genre: \$genre, sort: POPULARITY_DESC, type: MANGA, isAdult: false$countryFilter) {
-            $_mangaFragment
+          media($filterClause, sort: POPULARITY_DESC, type: MANGA, isAdult: false$countryFilter) {
+            \$_mangaFragment
           }
         }
       }
     ''';
-    return _fetchMangaList(query, {'genre': genre, 'page': page, 'perPage': perPage});
+    return _fetchMangaList(query, variables);
   }
 
   /// Fetch full details for a manga
@@ -504,24 +552,60 @@ class MangaService {
     return null;
   }
 
-  /// Helper to fetch and parse AniList media list
+  /// In-memory cache to guarantee manga data is preserved across tab switches and network blips
+  static final Map<String, List<AnilistMedia>> _mangaQueryCache = {};
+
+  /// Helper to fetch and parse AniList media list with memory cache & rate-limit resilience
   static Future<List<AnilistMedia>> _fetchMangaList(String query, Map<String, dynamic> variables) async {
+    final cacheKey = '$query#${jsonEncode(variables)}';
+
     try {
       final response = await http.post(
         Uri.parse(_anilistEndpoint),
         headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
         body: jsonEncode({'query': query, 'variables': variables}),
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 9));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final List<dynamic> list = data['data']?['Page']?['media'] ?? [];
-        return list.map((json) {
+        final results = list.map((json) {
           json['type'] = 'MANGA';
           return AnilistMedia.fromJson(json);
         }).toList();
+
+        if (results.isNotEmpty) {
+          _mangaQueryCache[cacheKey] = results;
+        }
+        return results;
+      } else if (response.statusCode == 429) {
+        // Rate limit reached: wait 1.2s and retry
+        await Future.delayed(const Duration(milliseconds: 1200));
+        final retry = await http.post(
+          Uri.parse(_anilistEndpoint),
+          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+          body: jsonEncode({'query': query, 'variables': variables}),
+        ).timeout(const Duration(seconds: 8));
+
+        if (retry.statusCode == 200) {
+          final data = jsonDecode(retry.body);
+          final List<dynamic> list = data['data']?['Page']?['media'] ?? [];
+          final results = list.map((json) {
+            json['type'] = 'MANGA';
+            return AnilistMedia.fromJson(json);
+          }).toList();
+          if (results.isNotEmpty) {
+            _mangaQueryCache[cacheKey] = results;
+          }
+          return results;
+        }
       }
     } catch (_) {}
+
+    // Fallback to cache if available
+    if (_mangaQueryCache.containsKey(cacheKey)) {
+      return _mangaQueryCache[cacheKey]!;
+    }
     return [];
   }
 
@@ -636,7 +720,7 @@ class MangaService {
     }
 
     // 2. AsuraScan Chapter
-    if (targetUrl != null && (targetUrl.contains('asurascans.com') || targetUrl.contains('asura'))) {
+    if (targetUrl != null && (targetUrl.contains('asurascans.com') || targetUrl.contains('asuracomic') || targetUrl.contains('asura'))) {
       final pages = await _fetchPagesFromAsuraScan(targetUrl);
       if (pages.isNotEmpty) return pages;
     }
@@ -647,20 +731,32 @@ class MangaService {
       if (pages.isNotEmpty) return pages;
     }
 
-    // 4. MangaRead Chapter
+    // 4. MangaKatana Chapter
+    if (targetUrl != null && targetUrl.contains('mangakatana.com')) {
+      final pages = await _fetchPagesFromMangaKatana(targetUrl);
+      if (pages.isNotEmpty) return pages;
+    }
+
+    // 5. FlameComics Chapter
+    if (targetUrl != null && (targetUrl.contains('flamecomics') || targetUrl.contains('flamescans'))) {
+      final pages = await _fetchPagesFromFlameComics(targetUrl);
+      if (pages.isNotEmpty) return pages;
+    }
+
+    // 6. MangaRead Chapter
     if (chapterId.startsWith('mangaread:') || (targetUrl != null && targetUrl.contains('mangaread.org'))) {
       final cleanUrl = targetUrl ?? chapterId.replaceFirst('mangaread:', '');
       final pages = await _fetchPagesFromMangaRead(cleanUrl);
       if (pages.isNotEmpty) return pages;
     }
 
-    // 5. General generic webtoon scraper fallback
+    // 7. General generic webtoon scraper fallback
     if (targetUrl != null && targetUrl.startsWith('http')) {
       final genericPages = await _fetchGenericPages(targetUrl);
       if (genericPages.isNotEmpty) return genericPages;
     }
 
-    // 6. Default / Fallback to MangaDex
+    // 8. Default / Fallback to MangaDex
     return _fetchPagesFromMangaDex(chapterId);
   }
 
@@ -708,16 +804,17 @@ class MangaService {
       final res = await http.get(
         Uri.parse(chapterUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://asurascans.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Referer': 'https://asuracomic.net/',
         },
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
-        final html = res.body;
+        final rawHtml = res.body;
+        final html = rawHtml.replaceAll(r'\/', '/').replaceAll('&quot;', '"');
         // Matches all CDN images from chapter json / dom
         final matches = RegExp(
-          r'https://cdn\.asurascans\.com/asura-images/chapters/[^\s"<>]+',
+          r"""https?://[^\s"'<>]+(?:\.(?:webp|jpg|jpeg|png)|\.avif)(?:\?[^\s"'<>]*)?""",
           caseSensitive: false,
         ).allMatches(html);
 
@@ -725,14 +822,95 @@ class MangaService {
         final List<String> pages = [];
         for (final m in matches) {
           var u = m.group(0)!;
-          u = u.replaceAll('&quot;', '').replaceAll(r'\"', '').replaceAll(r'\', '');
-          final clean = u.split('?').first;
-          if (seen.add(clean)) {
+          u = u.replaceAll('&quot;', '').replaceAll(r'\"', '').replaceAll(r'\', '').replaceAll('"', '').replaceAll("'", '');
+          final lower = u.toLowerCase();
+          final clean = lower.split('?').first;
+          if ((lower.contains('asura') || lower.contains('ggcdn') || lower.contains('storage') || lower.contains('chapter') || lower.contains('upload')) &&
+              !clean.contains('logo') &&
+              !clean.contains('banner') &&
+              !clean.contains('icon') &&
+              !clean.contains('discord') &&
+              !clean.contains('promo') &&
+              !clean.contains('avatar') &&
+              seen.add(clean)) {
             pages.add(u);
           }
         }
 
         if (pages.isNotEmpty) return pages;
+
+        // Fallback to generic extractor on the same page
+        final fallback = await _fetchGenericPages(chapterUrl, preloadedHtml: html);
+        if (fallback.isNotEmpty) return fallback;
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// High-speed extractor for MangaKatana chapters (unpacks JS var thzq array)
+  static Future<List<String>> _fetchPagesFromMangaKatana(String chapterUrl) async {
+    try {
+      final res = await http.get(
+        Uri.parse(chapterUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Referer': 'https://mangakatana.com/',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final match = RegExp(r'var\s+thzq\s*=\s*(\[[^;]+\]);').firstMatch(html);
+        if (match != null) {
+          final raw = match.group(1)!;
+          final urls = RegExp(r"""https?://[^\s"',\\]+""").allMatches(raw).map((m) => m.group(0)!).toList();
+          if (urls.isNotEmpty) return urls;
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// High-speed extractor for FlameComics chapters
+  static Future<List<String>> _fetchPagesFromFlameComics(String chapterUrl) async {
+    try {
+      final res = await http.get(
+        Uri.parse(chapterUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Referer': 'https://flamecomics.xyz/',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode == 200) {
+        final rawHtml = res.body;
+        final html = rawHtml.replaceAll(r'\/', '/').replaceAll('&quot;', '"');
+        final matches = RegExp(
+          r"""https?://[^\s"'<>]+(?:\.(?:webp|jpg|jpeg|png)|\.avif)(?:\?[^\s"'<>]*)?""",
+          caseSensitive: false,
+        ).allMatches(html);
+
+        final Set<String> seen = {};
+        final List<String> pages = [];
+        for (final m in matches) {
+          var u = m.group(0)!;
+          u = u.replaceAll('&quot;', '').replaceAll(r'\"', '').replaceAll(r'\', '').replaceAll('"', '').replaceAll("'", '');
+          final lower = u.toLowerCase();
+          final clean = lower.split('?').first;
+          if ((lower.contains('flame') || lower.contains('storage') || lower.contains('chapter') || lower.contains('upload')) &&
+              !clean.contains('logo') &&
+              !clean.contains('thumbnail') &&
+              !clean.contains('cover') &&
+              !clean.contains('avatar') &&
+              seen.add(clean)) {
+            pages.add(u);
+          }
+        }
+        if (pages.isNotEmpty) return pages;
+
+        // Fallback to generic extractor
+        final fallback = await _fetchGenericPages(chapterUrl, preloadedHtml: html);
+        if (fallback.isNotEmpty) return fallback;
       }
     } catch (_) {}
     return [];
@@ -784,21 +962,38 @@ class MangaService {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Referer': 'https://www.mangaread.org/',
         },
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final html = res.body;
-        final imgRegex = RegExp(
-          r'<img[^>]+(?:src|data-src)="\s*([^"]+)\s*"[^>]*class="[^"]*wp-manga-chapter-img',
-          caseSensitive: false,
-        );
-
-        final matches = imgRegex.allMatches(html);
         final pages = <String>[];
-        for (final m in matches) {
-          final url = m.group(1)!.trim();
-          if (url.startsWith('http')) {
-            pages.add(url);
+        final Set<String> seen = {};
+
+        // Find all <img> tags in chapter HTML
+        final imgTags = RegExp(r'<img[^>]+>', caseSensitive: false).allMatches(html);
+        for (final tagMatch in imgTags) {
+          final tag = tagMatch.group(0)!;
+          // Must belong to reading content
+          if (!tag.contains('wp-manga-chapter-img') && !tag.contains('page-break') && !tag.contains('chapter')) {
+            continue;
+          }
+          // Extract lazy-loaded or direct URL in priority order
+          String? url;
+          for (final attr in ['data-src', 'data-lazy-src', 'data-original', 'data-full-url', 'data-url', 'src']) {
+            final attrMatch = RegExp('$attr\\s*=\\s*["\x27]?\\s*([^"\x27\\s>]+)', caseSensitive: false).firstMatch(tag);
+            if (attrMatch != null) {
+              final candidate = attrMatch.group(1)!.trim();
+              if (candidate.startsWith('http') && !candidate.startsWith('data:')) {
+                url = candidate;
+                break;
+              }
+            }
+          }
+          if (url != null) {
+            final clean = url.split('?').first.toLowerCase();
+            if (!clean.contains('logo') && !clean.contains('banner') && !clean.contains('icon') && seen.add(clean)) {
+              pages.add(url);
+            }
           }
         }
 
@@ -806,48 +1001,103 @@ class MangaService {
           return pages;
         }
 
-        final altRegex = RegExp(
-          r'<div class="page-break[^"]*">\s*<img[^>]+(?:src|data-src)="\s*([^"]+)\s*"',
-          caseSensitive: false,
-        );
-        for (final m in altRegex.allMatches(html)) {
-          final url = m.group(1)!.trim();
-          if (url.startsWith('http') && !pages.contains(url)) {
-            pages.add(url);
-          }
-        }
-        return pages;
+        return _fetchGenericPages(chapterUrl, preloadedHtml: html);
       }
     } catch (_) {}
     return [];
   }
 
   /// Generic page extractor from arbitrary comic reader page HTML
-  static Future<List<String>> _fetchGenericPages(String chapterUrl) async {
+  static Future<List<String>> _fetchGenericPages(String chapterUrl, {String? preloadedHtml}) async {
     try {
-      final res = await http.get(
-        Uri.parse(chapterUrl),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      ).timeout(const Duration(seconds: 6));
+      String rawHtml = preloadedHtml ?? '';
+      if (rawHtml.isEmpty) {
+        final res = await http.get(
+          Uri.parse(chapterUrl),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
+        ).timeout(const Duration(seconds: 10));
 
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final matches = RegExp(
-          r'<img[^>]+(?:src|data-src)="\s*(https://[^"]+\.(?:jpg|jpeg|png|webp))',
+        if (res.statusCode == 200) {
+          rawHtml = res.body;
+        }
+      }
+
+      if (rawHtml.isNotEmpty) {
+        final html = rawHtml.replaceAll(r'\/', '/').replaceAll('&quot;', '"');
+        final List<String> bestCandidate = [];
+
+        // 1. Check for JS arrays in scripts (e.g. ts_reader, thzq, images=[...], pages=[...])
+        final scriptArrayMatch = RegExp(
+          r'(?:images|pages|ts_reader|chapter_images|thzq|pArray|sources)\s*[:=]\s*(\[[^\]]+\])',
           caseSensitive: false,
         ).allMatches(html);
 
-        final List<String> pages = [];
-        final Set<String> seen = {};
-        for (final m in matches) {
-          final u = m.group(1)!.trim();
-          if (!u.contains('logo') && !u.contains('icon') && seen.add(u)) {
-            pages.add(u);
+        for (final sam in scriptArrayMatch) {
+          final raw = sam.group(1)!;
+          final urls = RegExp(
+            r"""https?://[^\s"',\\]+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\s"',\\]+)?""",
+            caseSensitive: false,
+          ).allMatches(raw).map((m) => m.group(0)!).toList();
+          final List<String> current = [];
+          final Set<String> seen = {};
+          for (final u in urls) {
+            final clean = u.split('?').first.toLowerCase();
+            if (!clean.contains('logo') && !clean.contains('icon') && !clean.contains('cover') && seen.add(clean)) {
+              current.add(u);
+            }
+          }
+          if (current.length > bestCandidate.length) {
+            bestCandidate.clear();
+            bestCandidate.addAll(current);
           }
         }
-        return pages;
+
+        if (bestCandidate.length >= 5) {
+          return bestCandidate;
+        }
+
+        // 2. Comprehensive <img> attribute extraction
+        final List<String> imgPages = [];
+        final Set<String> seenImgs = {};
+        final imgTags = RegExp(r'<img[^>]+>', caseSensitive: false).allMatches(html);
+
+        for (final tm in imgTags) {
+          final tag = tm.group(0)!;
+          String? url;
+          for (final attr in ['data-original', 'data-src', 'data-lazy-src', 'data-full-url', 'data-url', 'src']) {
+            final attrMatch = RegExp('$attr\\s*=\\s*["\x27]?\\s*([^"\x27\\s>]+)', caseSensitive: false).firstMatch(tag);
+            if (attrMatch != null) {
+              final candidate = attrMatch.group(1)!.trim();
+              if (candidate.startsWith('http') && !candidate.startsWith('data:')) {
+                url = candidate;
+                break;
+              }
+            }
+          }
+
+          if (url != null) {
+            final clean = url.split('?').first.toLowerCase();
+            if (!clean.contains('logo') &&
+                !clean.contains('icon') &&
+                !clean.contains('avatar') &&
+                !clean.contains('banner') &&
+                !clean.contains('footer') &&
+                !clean.contains('header') &&
+                !clean.contains('pixel') &&
+                !clean.contains('blank') &&
+                seenImgs.add(clean)) {
+              imgPages.add(url);
+            }
+          }
+        }
+
+        if (imgPages.length > bestCandidate.length) {
+          return imgPages;
+        }
+
+        return bestCandidate;
       }
     } catch (_) {}
     return [];

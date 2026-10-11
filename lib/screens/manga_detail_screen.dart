@@ -374,8 +374,10 @@ class _MangaDetailScreenState extends State<MangaDetailScreen> {
                           icon: const Icon(Icons.auto_stories, color: Colors.white, size: 19),
                           label: Text(
                             _savedProgress != null
-                                ? "Resume Ch. ${_savedProgress!.chapterNumber}"
+                                ? "Resume Ch. ${_savedProgress!.chapterNumber} • Page ${_savedProgress!.pageIndex + 1}"
                                 : "Start Reading",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.bold),
                           ),
                         ),
@@ -547,20 +549,51 @@ class _MangaDetailScreenState extends State<MangaDetailScreen> {
                         ),
                         title: Text(
                           chapter.displayTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: isCurrent ? Colors.white : Colors.white.withOpacity(0.9),
                             fontSize: 13.5,
                             fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
                           ),
                         ),
-                        subtitle: chapter.releaseDate != null
-                            ? Text(
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (isCurrent && _savedProgress != null) ...[
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  Text(
+                                    "Page ${_savedProgress!.pageIndex + 1} of ${_savedProgress!.totalPages}",
+                                    style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(2),
+                                      child: LinearProgressIndicator(
+                                        value: _savedProgress!.progressPercentage,
+                                        backgroundColor: Colors.white12,
+                                        valueColor: AlwaysStoppedAnimation<Color>(accent),
+                                        minHeight: 3,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ] else if (chapter.releaseDate != null)
+                              Text(
                                 chapter.releaseDate!.split('T').first,
                                 style: const TextStyle(color: Colors.white38, fontSize: 11),
-                              )
-                            : null,
+                              ),
+                          ],
+                        ),
                         trailing: const Icon(Icons.arrow_forward_ios, color: Colors.white38, size: 13),
-                        onTap: () => _openReader(chapterIndex: originalIndex),
+                        onTap: () => _openReader(
+                          chapterIndex: originalIndex,
+                          initialPage: isCurrent && _savedProgress != null ? _savedProgress!.pageIndex : 0,
+                        ),
                       ),
                     );
                   },

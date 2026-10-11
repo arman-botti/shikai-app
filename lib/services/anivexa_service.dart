@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shikai_app/models/anivexa_episode.dart';
 import 'package:shikai_app/services/stream_service.dart';
+import 'package:shikai_app/services/security_vault.dart';
 
 /// -----------------------------------------------------------------------
 /// ANIVEXA WATCH RESULT MODEL
@@ -33,7 +34,7 @@ class AnivexaWatchResult {
 /// Official Multi-Provider Aggregator Engine for Shikai
 /// -----------------------------------------------------------------------
 class AnivexaService {
-  static const String baseUrl = 'https://shikai.biz';
+  static String get baseUrl => SecurityVault.shikaiBase;
 
   /// Fetch full episode catalog from Anivexa Aggregator
   static Future<Map<String, List<AnivexaEpisode>>> getEpisodes(int anilistId) async {
@@ -44,7 +45,7 @@ class AnivexaService {
 
     try {
       final res = await http.get(
-        Uri.parse('$baseUrl/api/anivexa/episodes/$anilistId'),
+        Uri.parse('${SecurityVault.shikaiBase}${SecurityVault.anivexaEpisodesPath}$anilistId'),
         headers: {'Accept': 'application/json'},
       ).timeout(const Duration(milliseconds: 3500));
 
@@ -98,7 +99,7 @@ class AnivexaService {
   }) async {
     try {
       final res = await http.get(
-        Uri.parse('$baseUrl/api/anivexa/watch/$anilistId/$episode?audio=$audio'),
+        Uri.parse('${SecurityVault.shikaiBase}${SecurityVault.anivexaWatchPath}$anilistId/$episode?audio=$audio'),
         headers: {'Accept': 'application/json'},
       ).timeout(const Duration(milliseconds: 3500));
 
@@ -112,7 +113,7 @@ class AnivexaService {
             String subUrl = s['url'] ?? s['file'] ?? '';
             if (subUrl.isNotEmpty) {
               if (!subUrl.startsWith('http')) {
-                subUrl = '$baseUrl${subUrl.startsWith('/') ? '' : '/'}$subUrl';
+                subUrl = '${SecurityVault.shikaiBase}${subUrl.startsWith('/') ? '' : '/'}$subUrl';
               }
               subs.add(SubtitleTrack(
                 url: subUrl,
@@ -140,7 +141,7 @@ class AnivexaService {
 
         if (streamUrl.isNotEmpty) {
           if (!streamUrl.startsWith('http')) {
-            streamUrl = '$baseUrl${streamUrl.startsWith('/') ? '' : '/'}$streamUrl';
+            streamUrl = '${SecurityVault.shikaiBase}${streamUrl.startsWith('/') ? '' : '/'}$streamUrl';
           }
           return AnivexaWatchResult(
             streamUrl: streamUrl,

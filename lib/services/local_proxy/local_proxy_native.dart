@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:shikai_app/services/client_stream_proxy.dart';
 import 'package:shikai_app/services/local_proxy/local_proxy_interface.dart';
+import 'package:shikai_app/services/security_vault.dart';
 
 class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
   HttpServer? _server;
@@ -16,6 +17,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
 
   static final Map<String, Uint8List> _keyCache = {};
   static final Map<String, String> _manifestCache = {};
+  static final List<String> _recentSegmentOrder = [];
 
   @override
   bool get isRunning => _server != null;
@@ -44,7 +46,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
     if (_port == 0) return upstreamMasterUrl;
     String effectiveMasterUrl = upstreamMasterUrl;
     if (!effectiveMasterUrl.startsWith('http')) {
-      effectiveMasterUrl = 'https://shikai.biz${effectiveMasterUrl.startsWith('/') ? '' : '/'}$effectiveMasterUrl';
+      effectiveMasterUrl = '${SecurityVault.shikaiBase}${effectiveMasterUrl.startsWith('/') ? '' : '/'}$effectiveMasterUrl';
     }
     final ref = referer ?? ClientStreamProxy.getRefererForUrl(effectiveMasterUrl);
     final keyParam = (key != null && key.isNotEmpty) ? '&key=${Uri.encodeComponent(key)}' : '';
@@ -57,7 +59,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
       try {
         final path = request.uri.path;
         String? targetUrl = request.uri.queryParameters['url'];
-        final referer = request.uri.queryParameters['ref'] ?? 'https://flixcloud.cc/';
+        final referer = request.uri.queryParameters['ref'] ?? SecurityVault.flixReferer;
         final keyParam = request.uri.queryParameters['key'];
         String? audioParam = request.uri.queryParameters['audio']?.toLowerCase();
         if (audioParam == null && targetUrl != null) {
@@ -91,7 +93,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
         }
 
         if (!targetUrl.startsWith('http')) {
-          targetUrl = 'https://shikai.biz${targetUrl.startsWith('/') ? '' : '/'}$targetUrl';
+          targetUrl = '${SecurityVault.shikaiBase}${targetUrl.startsWith('/') ? '' : '/'}$targetUrl';
         }
 
         // ==========================================================
@@ -180,7 +182,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
                   String childRef = referer;
 
                   if (rawUri.contains('playlist-child')) {
-                    final childParsed = Uri.tryParse(rawUri.startsWith('http') ? rawUri : 'https://shikai.biz$rawUri');
+                    final childParsed = Uri.tryParse(rawUri.startsWith('http') ? rawUri : '${SecurityVault.shikaiBase}$rawUri');
                     if (childParsed != null) {
                       childTarget = childParsed.queryParameters['url'] ?? childTarget;
                       childKey = childParsed.queryParameters['key'] ?? childKey;
@@ -207,7 +209,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
               String childRef = referer;
 
               if (trimmed.contains('playlist-child')) {
-                final childParsed = Uri.tryParse(trimmed.startsWith('http') ? trimmed : 'https://shikai.biz$trimmed');
+                final childParsed = Uri.tryParse(trimmed.startsWith('http') ? trimmed : '${SecurityVault.shikaiBase}$trimmed');
                 if (childParsed != null) {
                   childTarget = childParsed.queryParameters['url'] ?? childTarget;
                   childKey = childParsed.queryParameters['key'] ?? childKey;
@@ -247,7 +249,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
             rawText = await res.transform(const Utf8Decoder(allowMalformed: true)).join();
           } else {
             // Fallback to backend playlist-child if direct request got non-200 (e.g. VidMoly IP ASN lock)
-            final fallbackUrl = 'https://shikai.biz/api/anivexa/playlist-child?url=${Uri.encodeComponent(targetUrl)}&ref=${Uri.encodeComponent(referer)}';
+            final fallbackUrl = '${SecurityVault.shikaiBase}/api/anivexa/playlist-child?url=${Uri.encodeComponent(targetUrl)}&ref=${Uri.encodeComponent(referer)}';
             final fbReq = await _httpClient.getUrl(Uri.parse(fallbackUrl));
             final fbRes = await fbReq.close().timeout(const Duration(seconds: 10));
             if (fbRes.statusCode != HttpStatus.ok) {
@@ -276,7 +278,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
                 String keyRef = referer;
 
                 if (rawUri.contains('/api/anivexa/key') || rawUri.contains('key?url=')) {
-                  final parsedUri = Uri.tryParse(rawUri.startsWith('http') ? rawUri : 'https://shikai.biz$rawUri');
+                  final parsedUri = Uri.tryParse(rawUri.startsWith('http') ? rawUri : '${SecurityVault.shikaiBase}$rawUri');
                   if (parsedUri != null) {
                     keyTarget = parsedUri.queryParameters['url'] ?? keyTarget;
                     keyRef = parsedUri.queryParameters['ref'] ?? keyRef;
@@ -297,7 +299,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
                 String segRef = referer;
 
                 if (rawUri.contains('segment')) {
-                  final parsedUri = Uri.tryParse(rawUri.startsWith('http') ? rawUri : 'https://shikai.biz$rawUri');
+                  final parsedUri = Uri.tryParse(rawUri.startsWith('http') ? rawUri : '${SecurityVault.shikaiBase}$rawUri');
                   if (parsedUri != null) {
                     segTarget = parsedUri.queryParameters['url'] ?? segTarget;
                     segRef = parsedUri.queryParameters['ref'] ?? segRef;
@@ -313,12 +315,14 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
             // Handle Segment TS/WebP/PNG lines
             if (!trimmed.startsWith('#')) {
               if (trimmed.contains('/api/anivexa/segment') || trimmed.contains('segment?url=')) {
-                final fullSegmentUrl = trimmed.startsWith('http') ? trimmed : 'https://shikai.biz${trimmed.startsWith('/') ? '' : '/'}$trimmed';
+                final fullSegmentUrl = trimmed.startsWith('http') ? trimmed : '${SecurityVault.shikaiBase}${trimmed.startsWith('/') ? '' : '/'}$trimmed';
+                extractedSegUrls.add(fullSegmentUrl);
                 return fullSegmentUrl;
               }
 
               String segTarget = Uri.parse(baseUrl).resolve(trimmed).toString();
               String segRef = referer;
+              extractedSegUrls.add(segTarget);
 
               return 'http://127.0.0.1:$_port/seg.ts?url=${Uri.encodeComponent(segTarget)}&ref=${Uri.encodeComponent(segRef)}';
             }
@@ -326,8 +330,13 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
             return line;
           }).join('\n');
 
-          // Instantly trigger eager background prefetching for the first 2 chunks
-          for (final segUrl in extractedSegUrls) {
+          // Cache full segment sequence for continuous sliding-window prebuffering during playback
+          _recentSegmentOrder
+            ..clear()
+            ..addAll(extractedSegUrls);
+
+          // Eagerly prefetch the first 4 chunks so video starts instantly with zero buffer
+          for (final segUrl in extractedSegUrls.take(4)) {
             ClientStreamProxy.prefetchChunk(
               chunkUrl: segUrl,
               referer: referer,
@@ -377,6 +386,23 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
         // 0% Oracle Server Bandwidth!
         // ==========================================================
         if (path == '/seg.ts') {
+          // Continuous sliding-window prebuffering:
+          // Whenever ExoPlayer requests chunk i, immediately prefetch chunks i+1, i+2, i+3 into RAM!
+          final currentIndex = _recentSegmentOrder.indexOf(targetUrl);
+          if (currentIndex != -1) {
+            for (int offset = 1; offset <= 3; offset++) {
+              final nextIndex = currentIndex + offset;
+              if (nextIndex < _recentSegmentOrder.length) {
+                final nextSegUrl = _recentSegmentOrder[nextIndex];
+                ClientStreamProxy.prefetchChunk(
+                  chunkUrl: nextSegUrl,
+                  referer: referer,
+                  origin: ClientStreamProxy.getOriginForUrl(nextSegUrl, referer),
+                );
+              }
+            }
+          }
+
           final chunkBytes = await ClientStreamProxy.fetchChunkDirectly(
             chunkUrl: targetUrl,
             referer: referer,

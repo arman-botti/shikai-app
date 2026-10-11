@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:shikai_app/services/security_vault.dart';
 
 /// --------------------------------------------------------------------------
 /// SHIKAI CLIENT-SIDE STREAMING ENGINE (0% ORACLE VM BANDWIDTH)
@@ -29,7 +30,7 @@ class ClientStreamProxy {
   // In-memory chunk cache for instant 0ms startup & buffer delivery
   static final Map<String, Uint8List> _chunkCache = {};
   static final Set<String> _pendingPrefetches = {};
-  static const int _maxCacheEntries = 16;
+  static const int _maxCacheEntries = 48;
 
   static void cacheChunk(String url, Uint8List data) {
     if (_chunkCache.length >= _maxCacheEntries) {
@@ -57,11 +58,8 @@ class ClientStreamProxy {
     });
   }
 
-  // Exact FlixCloud XOR decryption key ported from streamServer.js
-  static final flixXorKey = Uint8List.fromList([
-    157, 42, 241, 71, 179, 142, 92, 112,
-    166, 25, 228, 59, 216, 98, 15, 197
-  ]);
+  // Cryptographically masked XOR cipher key resolved in RAM
+  static Uint8List get flixXorKey => SecurityVault.getFlixXorKey();
 
   /// Port of unwrapFlixImageSegment from streamServer.js
   /// Unwraps WebP/PNG image headers and removes XOR cipher in device RAM.
@@ -146,7 +144,7 @@ class ClientStreamProxy {
         return cleanTsBytes;
       } else {
         // Fallback to backend segment proxy if upstream CDN rejected direct connection (e.g. ASN check / 403 on VidMoly)
-        final fallbackUrl = 'https://shikai.biz/api/anivexa/segment?url=${Uri.encodeComponent(chunkUrl)}&ref=${Uri.encodeComponent(referer)}';
+        final fallbackUrl = '${SecurityVault.shikaiBase}/api/anivexa/segment?url=${Uri.encodeComponent(chunkUrl)}&ref=${Uri.encodeComponent(referer)}';
         final fbReq = await _persistentClient.getUrl(Uri.parse(fallbackUrl));
         final fbResp = await fbReq.close().timeout(const Duration(seconds: 12));
         if (fbResp.statusCode == HttpStatus.ok) {
@@ -161,7 +159,7 @@ class ClientStreamProxy {
       }
     } catch (_) {
       try {
-        final fallbackUrl = 'https://shikai.biz/api/anivexa/segment?url=${Uri.encodeComponent(chunkUrl)}&ref=${Uri.encodeComponent(referer)}';
+        final fallbackUrl = '${SecurityVault.shikaiBase}/api/anivexa/segment?url=${Uri.encodeComponent(chunkUrl)}&ref=${Uri.encodeComponent(referer)}';
         final fbReq = await _persistentClient.getUrl(Uri.parse(fallbackUrl));
         final fbResp = await fbReq.close().timeout(const Duration(seconds: 12));
         if (fbResp.statusCode == HttpStatus.ok) {
@@ -223,29 +221,9 @@ class ClientStreamProxy {
     }
   }
 
-  /// Get appropriate Referer header for a given CDN stream URL
+  /// Get appropriate Referer header for a given CDN stream URL (Cryptographically Shielded)
   static String getRefererForUrl(String url, [String? explicitRef]) {
-    if (explicitRef != null && explicitRef.isNotEmpty) return explicitRef;
-    final u = url.toLowerCase();
-    if (u.contains('flixcloud') || u.contains('rundowncdn') || u.contains('vividcdn') || u.contains('fallencdn') || u.contains('rabbitstream')) {
-      return 'https://flixcloud.cc/';
-    }
-    if (u.contains('anizone') || u.contains('vid-cdn.xyz') || u.contains('seiryuu')) {
-      return 'https://anizone.to/';
-    }
-    if (u.contains('vidmoly') || u.contains('vmpx') || u.contains('moly')) {
-      return 'https://vidmoly.net/';
-    }
-    if (u.contains('anikoto') || u.contains('nexabloom') || u.contains('megaplay')) {
-      return 'https://anikoto.com/';
-    }
-    if (u.contains('4animo') || u.contains('zangetsu')) {
-      return 'https://zangetsu.cc/';
-    }
-    if (u.contains('echovideo') || u.contains('savedly') || u.contains('aniwave')) {
-      return 'https://play.echovideo.ru/';
-    }
-    return 'https://flixcloud.cc/';
+    return SecurityVault.resolveReferer(url, explicitRef);
   }
 
   /// Get appropriate Origin header for a given CDN stream URL
@@ -255,7 +233,7 @@ class ClientStreamProxy {
       final parsed = Uri.parse(ref);
       return '${parsed.scheme}://${parsed.host}';
     } catch (_) {
-      return 'https://flixcloud.cc';
+      return SecurityVault.flixReferer.replaceAll(RegExp(r'/$'), '');
     }
   }
 }

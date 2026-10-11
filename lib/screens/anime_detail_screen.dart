@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/models/anivexa_episode.dart';
+import 'package:shikai_app/models/media_relation.dart';
 import 'package:shikai_app/services/anivexa_service.dart';
+import 'package:shikai_app/services/anilist_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/screens/player_screen.dart';
+import 'package:shikai_app/screens/manga_detail_screen.dart';
 import 'package:shikai_app/widgets/shikai_network_image.dart';
 
 class AnimeDetailScreen extends StatefulWidget {
@@ -21,8 +24,6 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
   String _selectedAudio = 'sub'; // 'sub' or 'dub'
   bool _isSynopsisExpanded = false;
 
-  // Seanime style pagination & sorting
-  int _selectedRangeIndex = 0;
   bool _isAscending = true;
 
   // Watch history & Watched tracking
@@ -36,6 +37,10 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
   List<AnivexaEpisode> _dubEpisodes = [];
   bool _isLoadingEpisodes = true;
 
+  // Franchise & Related Series
+  List<MediaRelation> _relations = [];
+  bool _isLoadingRelations = true;
+
   @override
   void initState() {
     super.initState();
@@ -46,7 +51,24 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
     await Future.wait([
       _loadAnivexaEpisodes(),
       _loadWatchStatus(),
+      _loadRelations(),
     ]);
+  }
+
+  Future<void> _loadRelations() async {
+    try {
+      final relations = await AnilistService.getAnimeRelations(widget.media.id);
+      // Sort in true chronological watch order (Prequel/S1 -> Sequel/S2 -> Movie -> Spin-off)
+      relations.sort((a, b) => a.watchOrderPriority.compareTo(b.watchOrderPriority));
+      if (mounted) {
+        setState(() {
+          _relations = relations;
+          _isLoadingRelations = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingRelations = false);
+    }
   }
 
   Future<void> _loadWatchStatus() async {
@@ -83,10 +105,6 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
           }
         }
         _selectedEpisode = targetEp;
-
-        // Automatically position range bucket to include this episode
-        const chunkSize = 25;
-        _selectedRangeIndex = ((_selectedEpisode - 1) / chunkSize).floor();
       });
     }
   }
@@ -177,6 +195,31 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
     _loadWatchStatus();
   }
 
+  String _formatEpisodeDisplayTitle(AnivexaEpisode ep) {
+    String rawTitle = ep.title.trim();
+    final animeTitle = widget.media.title.trim();
+    final englishTitle = widget.media.englishTitle.trim();
+
+    // Strip anime title prefix if present (e.g. "Bleach Episode 1: The Day" -> "The Day")
+    if (animeTitle.isNotEmpty && rawTitle.toLowerCase().startsWith(animeTitle.toLowerCase())) {
+      rawTitle = rawTitle.substring(animeTitle.length).trim();
+    } else if (englishTitle.isNotEmpty && rawTitle.toLowerCase().startsWith(englishTitle.toLowerCase())) {
+      rawTitle = rawTitle.substring(englishTitle.length).trim();
+    }
+
+    // Strip leading punctuation/delimiters like "-", ":", "•"
+    rawTitle = rawTitle.replaceAll(RegExp(r'^[-:•–—\s]+'), '').trim();
+
+    // Strip redundant "Episode X" or "Ep X" prefix if followed by a real name
+    final epPrefixRegex = RegExp(r'^(Episode|Ep|EP)\s*\d+[-:•–—\s]*', caseSensitive: false);
+    final stripped = rawTitle.replaceFirst(epPrefixRegex, '').trim();
+
+    if (stripped.isNotEmpty && !stripped.toLowerCase().startsWith('episode')) {
+      return "Episode ${ep.number} • $stripped";
+    }
+    return "Episode ${ep.number}";
+  }
+
   @override
   Widget build(BuildContext context) {
     final media = widget.media;
@@ -185,22 +228,10 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
         ? currentEpisodesList.length
         : (media.episodes ?? 12);
 
-    // Seanime-style Range Buckets (25 episodes per chunk)
-    const chunkSize = 25;
-    final numRanges = (totalEpisodes / chunkSize).ceil().clamp(1, 100);
-    if (_selectedRangeIndex >= numRanges) {
-      _selectedRangeIndex = 0;
-    }
-
-    final startEp = (_selectedRangeIndex * chunkSize) + 1;
-    final endEp = ((_selectedRangeIndex + 1) * chunkSize).clamp(1, totalEpisodes);
-
-    // Filter and sort for the active batch
+    // Direct clean episodes list without range chunk barriers
     List<AnivexaEpisode> visibleEpisodes = [];
     if (currentEpisodesList.isNotEmpty) {
       visibleEpisodes = currentEpisodesList.where((ep) {
-        final inRange = ep.number >= startEp && ep.number <= endEp;
-        if (!inRange) return false;
         if (_unwatchedOnly) {
           return !_watchedEpisodes.contains(ep.number);
         }
@@ -534,6 +565,9 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                         const SizedBox(height: 20),
                       ],
 
+                      // Franchise Universe & Related Series Section
+                      _buildFranchiseSection(accent),
+
                       // Seanime-Style Episodes Header with Range Selector & Order Toggle
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -607,7 +641,7 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                           FilterChip(
                             avatar: const Icon(Icons.remove_red_eye_outlined, size: 14, color: Colors.amberAccent),
                             label: Text(
-                              "Unwatched (${(totalEpisodes - _watchedEpisodes.length).clamp(0, totalEpisodes)})",
+                              "Remaining (${(totalEpisodes - _watchedEpisodes.length).clamp(0, totalEpisodes)})",
                             ),
                             selected: _unwatchedOnly,
                             selectedColor: Colors.amberAccent.withOpacity(0.18),
@@ -630,49 +664,6 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                           ),
                         ],
                       ),
-
-                      // Range Bucket Chips (e.g. 1-25, 26-50...)
-                      if (numRanges > 1) ...[
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          height: 34,
-                          child: ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: numRanges,
-                            itemBuilder: (context, index) {
-                              final rStart = (index * chunkSize) + 1;
-                              final rEnd = ((index + 1) * chunkSize).clamp(1, totalEpisodes);
-                              final isRangeActive = index == _selectedRangeIndex;
-
-                              return GestureDetector(
-                                onTap: () {
-                                  setState(() {
-                                    _selectedRangeIndex = index;
-                                  });
-                                },
-                                child: Container(
-                                  margin: const EdgeInsets.only(right: 8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: isRangeActive ? accent : ThemeService.surface,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: isRangeActive ? accent : ThemeService.border),
-                                  ),
-                                  child: Text(
-                                    "$rStart - $rEnd",
-                                    style: TextStyle(
-                                      color: isRangeActive ? Colors.white : ThemeService.textMuted,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-
                       const SizedBox(height: 12),
                     ],
                   ),
@@ -755,64 +746,9 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          Wrap(
-                                            spacing: 6,
-                                            runSpacing: 4,
-                                            crossAxisAlignment: WrapCrossAlignment.center,
-                                            children: [
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                decoration: BoxDecoration(
-                                                  color: isSelected
-                                                      ? accent
-                                                      : ThemeService.background,
-                                                  borderRadius: BorderRadius.circular(4),
-                                                  border: Border.all(color: isSelected ? accent : ThemeService.border),
-                                                ),
-                                                child: Text(
-                                                  "EP ${ep.number}",
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (isWatched)
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: const Color(0xFF10B981).withOpacity(0.18),
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
-                                                  ),
-                                                  child: const Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(Icons.check, size: 10, color: Color(0xFF10B981)),
-                                                      SizedBox(width: 2),
-                                                      Text(
-                                                        "Watched",
-                                                        style: TextStyle(
-                                                          color: Color(0xFF10B981),
-                                                          fontSize: 9,
-                                                          fontWeight: FontWeight.bold,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              if (ep.duration != null)
-                                                Text(
-                                                  "${(ep.duration! / 60).round()}m",
-                                                  style: const TextStyle(color: ThemeService.textDarkMuted, fontSize: 11),
-                                                ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 5),
                                           Text(
-                                            ep.title,
-                                            maxLines: 1,
+                                            _formatEpisodeDisplayTitle(ep),
+                                            maxLines: 2,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
                                               color: isSelected
@@ -820,9 +756,45 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                                   : isWatched
                                                       ? ThemeService.textMuted
                                                       : Colors.white,
-                                              fontSize: 13,
+                                              fontSize: 13.5,
                                               fontWeight: FontWeight.w600,
                                             ),
+                                          ),
+                                          const SizedBox(height: 5),
+                                          Row(
+                                            children: [
+                                              if (isWatched) ...[
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF10B981).withOpacity(0.15),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: const Color(0xFF10B981).withOpacity(0.35)),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(Icons.check_circle_rounded, size: 11, color: Color(0xFF10B981)),
+                                                      const SizedBox(width: 3),
+                                                      Text(
+                                                        ep.duration != null ? "${(ep.duration! / 60).round()}m" : "Completed",
+                                                        style: const TextStyle(
+                                                          color: Color(0xFF10B981),
+                                                          fontSize: 10,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                              ],
+                                              if (ep.duration != null)
+                                                Text(
+                                                  "${(ep.duration! / 60).round()}m",
+                                                  style: const TextStyle(color: ThemeService.textDarkMuted, fontSize: 11),
+                                                ),
+                                            ],
                                           ),
                                           if (ep.description != null && ep.description!.isNotEmpty) ...[
                                             const SizedBox(height: 3),
@@ -844,7 +816,7 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                         color: isWatched ? const Color(0xFF10B981) : ThemeService.textDarkMuted,
                                         size: 20,
                                       ),
-                                      tooltip: isWatched ? "Mark as unwatched" : "Mark as watched",
+                                      tooltip: isWatched ? "Clear progress" : "Mark completed",
                                       onPressed: () => _toggleEpisodeWatched(ep.number),
                                     ),
                                   ],
@@ -894,46 +866,78 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                     ),
                   ),
                 )
-              else
-                // Fallback Grid for any anime where Anivexa metadata is still loading
+              else if (_isLoadingEpisodes)
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                  sliver: SliverGrid(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 5,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      childAspectRatio: 1.4,
-                    ),
+                  sliver: SliverList(
                     delegate: SliverChildBuilderDelegate(
                       (context, index) {
-                        final epNum = _isAscending ? (startEp + index) : (endEp - index);
-                        final isSelected = epNum == _selectedEpisode;
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () => _watchEpisode(epNum),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: isSelected ? accent : ThemeService.surface,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: isSelected ? accent : ThemeService.border,
-                              ),
-                            ),
-                            child: Center(
-                              child: Text(
-                                "$epNum",
-                                style: TextStyle(
-                                  color: isSelected ? Colors.white : ThemeService.textMuted,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13,
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(10.0),
+                          decoration: BoxDecoration(
+                            color: ThemeService.surface,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: ThemeService.border),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 110,
+                                height: 66,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.05),
+                                  borderRadius: BorderRadius.circular(7),
                                 ),
                               ),
-                            ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      width: 140,
+                                      height: 14,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withOpacity(0.08),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Container(
+                                      width: 70,
+                                      height: 10,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withOpacity(0.04),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
                         );
                       },
-                      childCount: (endEp - startEp + 1).clamp(0, totalEpisodes),
+                      childCount: 4,
+                    ),
+                  ),
+                )
+              else
+                SliverToBoxAdapter(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: ThemeService.surface,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: ThemeService.border),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        "No episodes available for this selection.",
+                        style: TextStyle(color: ThemeService.textMuted, fontSize: 13),
+                      ),
                     ),
                   ),
                 ),
@@ -1008,6 +1012,312 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
             style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 11),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildFranchiseSection(Color accent) {
+    if (_isLoadingRelations) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 24.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(Icons.hub_rounded, color: accent, size: 16),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  "Franchise & Related Series",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(color: accent, strokeWidth: 2),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 205,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: 3,
+                itemBuilder: (_, __) => Container(
+                  width: 120,
+                  margin: const EdgeInsets.only(right: 12),
+                  decoration: BoxDecoration(
+                    color: ThemeService.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: ThemeService.border),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_relations.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header Row
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: accent.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.hub_rounded, color: accent, size: 16),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                "Watch Order & Seasons",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16.5,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: ThemeService.surface,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: ThemeService.border),
+                ),
+                child: Text(
+                  "${_relations.length}",
+                  style: const TextStyle(
+                    color: ThemeService.textMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              const Text(
+                "Chronological Order",
+                style: TextStyle(
+                  color: ThemeService.textDarkMuted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Horizontal Shelf
+          SizedBox(
+            height: 215,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              itemCount: _relations.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (context, index) {
+                final rel = _relations[index];
+                return RepaintBoundary(
+                  child: _buildFranchiseCard(context, rel, accent),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFranchiseCard(BuildContext context, MediaRelation rel, Color accent) {
+    final media = rel.media;
+
+    return GestureDetector(
+      onTap: () {
+        if (rel.isManga) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MangaDetailScreen(manga: media),
+            ),
+          );
+        } else {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => AnimeDetailScreen(media: media),
+            ),
+          );
+        }
+      },
+      child: SizedBox(
+        width: 120,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Poster Container with Badges
+            Container(
+              height: 160,
+              width: 120,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: ThemeService.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.4),
+                    blurRadius: 8,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(9),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ShikaiNetworkImage(
+                      imageUrl: media.coverImage,
+                      placeholderTitle: media.displayTitle,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    // Gradient overlay
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withOpacity(0.65),
+                            Colors.transparent,
+                            Colors.black.withOpacity(0.85),
+                          ],
+                          stops: const [0.0, 0.45, 1.0],
+                        ),
+                      ),
+                    ),
+                    // Top-Left Relation Badge with Icon
+                    Positioned(
+                      top: 6,
+                      left: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
+                        decoration: BoxDecoration(
+                          color: rel.smartTagColor.withOpacity(0.92),
+                          borderRadius: BorderRadius.circular(4),
+                          boxShadow: [
+                            BoxShadow(
+                              color: rel.smartTagColor.withOpacity(0.4),
+                              blurRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(rel.tagIcon, size: 9, color: Colors.white),
+                            const SizedBox(width: 3),
+                            Text(
+                              rel.smartDisplayTag,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    // Bottom Metadata Row (Format & Score/Episodes)
+                    Positioned(
+                      bottom: 5,
+                      left: 6,
+                      right: 6,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          if (media.format != null)
+                            Text(
+                              media.format!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          if (media.averageScore != null)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.star, color: Colors.amber, size: 9),
+                                const SizedBox(width: 2),
+                                Text(
+                                  (media.averageScore! / 10).toStringAsFixed(1),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            )
+                          else if (media.episodes != null)
+                            Text(
+                              "${media.episodes} Ep",
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Title
+            Text(
+              media.displayTitle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFFE4E4E7),
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                height: 1.22,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

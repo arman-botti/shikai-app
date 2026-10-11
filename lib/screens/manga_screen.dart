@@ -15,26 +15,37 @@ class MangaScreen extends StatefulWidget {
 }
 
 class _MangaScreenState extends State<MangaScreen> {
+  final ScrollController _scrollController = ScrollController();
   final TextEditingController _searchController = TextEditingController();
   Timer? _debounceTimer;
 
-  bool _isLoading = true;
-  List<AnilistMedia> _spotlight = [];
-  List<AnilistMedia> _trending = [];
-  List<AnilistMedia> _popularCategory = [];
-  List<AnilistMedia> _popularManhwa = [];
-  List<AnilistMedia> _popularManhua = [];
-  List<AnilistMedia> _popularManga = [];
-  List<AnilistMedia> _topRated = [];
-  List<AnilistMedia> _actionHits = [];
-  List<AnilistMedia> _fantasyHits = [];
-
-  // Search & Filter state
+  // Active filter state
   String _selectedCategory = 'All'; // All, Manga, Manhwa, Manhua
   String _selectedGenre = 'All';
   String _searchQuery = '';
-  List<AnilistMedia> _searchResults = [];
-  bool _isSearching = false;
+  int _requestId = 0;
+
+  // Status flags
+  bool _isLoading = true;
+  bool _isLoadingMore = false;
+
+  // Category in-memory caches (Preserves data across tab switching so manga never disappears)
+  final Map<String, List<AnilistMedia>> _categorySpotlight = {};
+  final Map<String, List<AnilistMedia>> _categoryTrending = {};
+  final Map<String, List<AnilistMedia>> _categoryTopRated = {};
+  final Map<String, List<AnilistMedia>> _categoryInfinite = {};
+  final Map<String, int> _categoryPage = {};
+  final Map<String, bool> _categoryHasMore = {};
+
+  // Genre filtered list state
+  List<AnilistMedia> _genreItems = [];
+  int _genrePage = 1;
+  bool _genreHasMore = true;
+
+  // Search filtered list state
+  List<AnilistMedia> _searchItems = [];
+  int _searchPage = 1;
+  bool _searchHasMore = true;
 
   final List<String> _categories = ['All', 'Manga', 'Manhwa', 'Manhua'];
   final Map<String, String> _categoryLabels = {
@@ -44,181 +55,336 @@ class _MangaScreenState extends State<MangaScreen> {
     'Manhua': '🇨🇳 Manhua',
   };
 
-  final List<String> _genres = [
-    'All', 'Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror',
-    'Isekai', 'Mystery', 'Psychological', 'Romance', 'Sci-Fi', 'Slice of Life',
-    'Supernatural', 'Thriller'
+  final List<String> _allGenres = [
+    'All', 'Leveling', 'Murim', 'Cultivation', 'Isekai', 'Shonen', 'Seinen',
+    'Action', 'Fantasy', 'Reincarnation', 'Romance', 'Supernatural', 'Psychological', 'Comedy'
   ];
+
+  final List<String> _manhwaGenres = [
+    'All', 'Leveling', 'Murim', 'Dungeon', 'Regression', 'Reincarnation',
+    'Villainess', 'Revenge', 'Action', 'Fantasy', 'Romance', 'Supernatural'
+  ];
+
+  final List<String> _manhuaGenres = [
+    'All', 'Cultivation', 'Xianxia', 'Wuxia', 'Rebirth', 'Urban',
+    'Action', 'Fantasy', 'Adventure', 'Supernatural', 'Comedy'
+  ];
+
+  final List<String> _mangaGenres = [
+    'All', 'Shonen', 'Seinen', 'Isekai', 'Dark Fantasy', 'Psychological',
+    'Action', 'Romance', 'Supernatural', 'Comedy', 'Mystery', 'Sci-Fi'
+  ];
+
+  List<String> get _currentGenres {
+    switch (_selectedCategory) {
+      case 'Manhwa':
+        return _manhwaGenres;
+      case 'Manhua':
+        return _manhuaGenres;
+      case 'Manga':
+        return _mangaGenres;
+      default:
+        return _allGenres;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _loadMangaFeeds();
+    _loadCategoryData(_selectedCategory);
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _searchController.dispose();
     _debounceTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadMangaFeeds() async {
-    setState(() => _isLoading = true);
-    try {
-      if (_selectedCategory == 'Manhwa') {
-        // STRICTLY South Korean Manhwa / Webtoons (countryOfOrigin: "KR")
-        final results = await Future.wait([
-          MangaService.getTrendingManga(category: 'Manhwa', perPage: 25),
-          MangaService.getPopularManga(category: 'Manhwa', perPage: 25),
-          MangaService.getMangaByGenre('Action', category: 'Manhwa', perPage: 25),
-          MangaService.getMangaByGenre('Fantasy', category: 'Manhwa', perPage: 25),
-          MangaService.getTopRatedManga(category: 'Manhwa', perPage: 25),
-        ]);
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 450) {
+      if (_isLoading || _isLoadingMore) return;
 
-        if (!mounted) return;
-        setState(() {
-          _trending = results[0];
-          _spotlight = _trending.take(5).toList();
-          _popularCategory = results[1];
-          _actionHits = results[2];
-          _fantasyHits = results[3];
-          _topRated = results[4];
-          _isLoading = false;
-        });
-      } else if (_selectedCategory == 'Manhua') {
-        // STRICTLY Chinese Manhua (countryOfOrigin: "CN")
-        final results = await Future.wait([
-          MangaService.getTrendingManga(category: 'Manhua', perPage: 25),
-          MangaService.getPopularManga(category: 'Manhua', perPage: 25),
-          MangaService.getMangaByGenre('Action', category: 'Manhua', perPage: 25),
-          MangaService.getMangaByGenre('Fantasy', category: 'Manhua', perPage: 25),
-          MangaService.getTopRatedManga(category: 'Manhua', perPage: 25),
-        ]);
-
-        if (!mounted) return;
-        setState(() {
-          _trending = results[0];
-          _spotlight = _trending.take(5).toList();
-          _popularCategory = results[1];
-          _actionHits = results[2];
-          _fantasyHits = results[3];
-          _topRated = results[4];
-          _isLoading = false;
-        });
-      } else if (_selectedCategory == 'Manga') {
-        // STRICTLY Japanese Manga (countryOfOrigin_not_in: ["KR", "CN"])
-        final results = await Future.wait([
-          MangaService.getTrendingManga(category: 'Manga', perPage: 25),
-          MangaService.getPopularManga(category: 'Manga', perPage: 25),
-          MangaService.getMangaByGenre('Action', category: 'Manga', perPage: 25),
-          MangaService.getMangaByGenre('Supernatural', category: 'Manga', perPage: 25),
-          MangaService.getTopRatedManga(category: 'Manga', perPage: 25),
-        ]);
-
-        if (!mounted) return;
-        setState(() {
-          _trending = results[0];
-          _spotlight = _trending.take(5).toList();
-          _popularCategory = results[1];
-          _actionHits = results[2];
-          _fantasyHits = results[3];
-          _topRated = results[4];
-          _isLoading = false;
-        });
+      if (_searchQuery.isNotEmpty) {
+        _loadMoreSearch();
+      } else if (_selectedGenre != 'All') {
+        _loadMoreGenre();
       } else {
-        // 'All' - Comprehensive catalog across all origins
-        final results = await Future.wait([
-          MangaService.getTrendingManga(category: 'All', perPage: 25),
-          MangaService.getPopularManhwa(perPage: 20),
-          MangaService.getPopularManhua(perPage: 20),
-          MangaService.getPopularJapaneseManga(perPage: 20),
-          MangaService.getTopRatedManga(category: 'All', perPage: 25),
-        ]);
-
-        if (!mounted) return;
-        setState(() {
-          _trending = results[0];
-          _spotlight = _trending.take(5).toList();
-          _popularManhwa = results[1];
-          _popularManhua = results[2];
-          _popularManga = results[3];
-          _topRated = results[4];
-          _isLoading = false;
-        });
+        _loadMoreCategoryInfinite();
       }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // DATA FETCHING & PAGINATION (INFINITE SCROLL)
+  // --------------------------------------------------------------------------
+
+  Future<void> _loadCategoryData(String category, {bool forceRefresh = false}) async {
+    final int currentRequestId = ++_requestId;
+
+    // 1. If already cached and not forcing refresh, display instantly with 0ms delay!
+    if (!forceRefresh && _categoryInfinite[category] != null && _categoryInfinite[category]!.isNotEmpty) {
+      setState(() {
+        _isLoading = false;
+        _isLoadingMore = false;
+      });
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final results = await Future.wait([
+        MangaService.getTrendingManga(category: category, perPage: 18),
+        MangaService.getTopRatedManga(category: category, perPage: 18),
+        MangaService.getPopularManga(category: category, page: 1, perPage: 24),
+      ]);
+
+      if (!mounted || currentRequestId != _requestId) return;
+
+      final trending = results[0];
+      final topRated = results[1];
+      final infinite = results[2];
+
+      setState(() {
+        _categoryTrending[category] = trending;
+        _categorySpotlight[category] = trending.take(5).toList();
+        _categoryTopRated[category] = topRated;
+        _categoryInfinite[category] = infinite;
+        _categoryPage[category] = 1;
+        _categoryHasMore[category] = infinite.length >= 24;
+        _isLoading = false;
+        _isLoadingMore = false;
+      });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || currentRequestId != _requestId) return;
       setState(() => _isLoading = false);
     }
   }
 
+  Future<void> _loadMoreCategoryInfinite() async {
+    final cat = _selectedCategory;
+    if (_isLoadingMore || (_categoryHasMore[cat] == false)) return;
+
+    setState(() => _isLoadingMore = true);
+
+    try {
+      final nextPage = (_categoryPage[cat] ?? 1) + 1;
+      final more = await MangaService.getPopularManga(
+        category: cat,
+        page: nextPage,
+        perPage: 24,
+      );
+
+      if (!mounted || _selectedCategory != cat) return;
+
+      setState(() {
+        if (more.isNotEmpty) {
+          final current = _categoryInfinite[cat] ?? [];
+          final existingIds = current.map((m) => m.id).toSet();
+          final uniqueNew = more.where((m) => !existingIds.contains(m.id)).toList();
+          current.addAll(uniqueNew);
+          _categoryInfinite[cat] = current;
+          _categoryPage[cat] = nextPage;
+        }
+        if (more.length < 24) {
+          _categoryHasMore[cat] = false;
+        }
+        _isLoadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingMore = false);
+    }
+  }
+
   void _onCategorySelected(String cat) {
-    if (_selectedCategory == cat) return;
+    if (_selectedCategory == cat && _selectedGenre == 'All' && _searchQuery.isEmpty) return;
+
     setState(() {
       _selectedCategory = cat;
+      _selectedGenre = 'All';
+      _genreItems.clear();
+      _genrePage = 1;
+      _genreHasMore = true;
     });
 
     if (_searchQuery.isNotEmpty) {
       _executeSearch(_searchQuery);
-    } else if (_selectedGenre != 'All') {
-      _executeGenreFilter(_selectedGenre);
     } else {
-      _loadMangaFeeds();
+      _loadCategoryData(cat);
+    }
+  }
+
+  void _onGenreSelected(String genre) {
+    if (_selectedGenre == genre) return;
+
+    setState(() {
+      _selectedGenre = genre;
+      _genreItems.clear();
+      _genrePage = 1;
+      _genreHasMore = true;
+    });
+
+    if (genre == 'All') {
+      if (_searchQuery.isNotEmpty) {
+        _executeSearch(_searchQuery);
+      } else {
+        _loadCategoryData(_selectedCategory);
+      }
+    } else {
+      _loadGenreData(genre);
+    }
+  }
+
+  Future<void> _loadGenreData(String genre) async {
+    final int currentRequestId = ++_requestId;
+    setState(() => _isLoading = true);
+
+    try {
+      final items = await MangaService.getMangaByGenre(
+        genre,
+        category: _selectedCategory,
+        page: 1,
+        perPage: 24,
+      );
+
+      if (!mounted || currentRequestId != _requestId) return;
+
+      setState(() {
+        _genreItems = items;
+        _genrePage = 1;
+        _genreHasMore = items.length >= 24;
+        _isLoading = false;
+        _isLoadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted || currentRequestId != _requestId) return;
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadMoreGenre() async {
+    if (_isLoadingMore || !_genreHasMore) return;
+
+    setState(() => _isLoadingMore = true);
+
+    try {
+      final nextPage = _genrePage + 1;
+      final more = await MangaService.getMangaByGenre(
+        _selectedGenre,
+        category: _selectedCategory,
+        page: nextPage,
+        perPage: 24,
+      );
+
+      if (!mounted || _selectedGenre == 'All') return;
+
+      setState(() {
+        if (more.isNotEmpty) {
+          final existingIds = _genreItems.map((m) => m.id).toSet();
+          final uniqueNew = more.where((m) => !existingIds.contains(m.id)).toList();
+          _genreItems.addAll(uniqueNew);
+          _genrePage = nextPage;
+        }
+        if (more.length < 24) {
+          _genreHasMore = false;
+        }
+        _isLoadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingMore = false);
     }
   }
 
   void _onSearchChanged(String query) {
     _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 400), () {
+    _debounceTimer = Timer(const Duration(milliseconds: 380), () {
       final trimmed = query.trim();
       setState(() {
         _searchQuery = trimmed;
-        _isSearching = trimmed.isNotEmpty;
       });
 
       if (trimmed.isNotEmpty) {
         _executeSearch(trimmed);
+      } else {
+        if (_selectedGenre != 'All') {
+          _loadGenreData(_selectedGenre);
+        } else {
+          _loadCategoryData(_selectedCategory);
+        }
       }
     });
   }
 
-  void _executeSearch(String query) async {
+  Future<void> _executeSearch(String query) async {
+    final int currentRequestId = ++_requestId;
     setState(() => _isLoading = true);
-    final results = await MangaService.searchManga(query, category: _selectedCategory);
-    if (mounted) {
+
+    try {
+      final items = await MangaService.searchManga(
+        query,
+        category: _selectedCategory,
+        page: 1,
+        perPage: 24,
+      );
+
+      if (!mounted || currentRequestId != _requestId) return;
+
       setState(() {
-        _searchResults = results;
+        _searchItems = items;
+        _searchPage = 1;
+        _searchHasMore = items.length >= 24;
         _isLoading = false;
+        _isLoadingMore = false;
       });
+    } catch (_) {
+      if (!mounted || currentRequestId != _requestId) return;
+      setState(() => _isLoading = false);
     }
   }
 
-  void _onGenreSelected(String genre) {
-    setState(() {
-      _selectedGenre = genre;
-      _isSearching = genre != 'All';
-    });
+  Future<void> _loadMoreSearch() async {
+    if (_isLoadingMore || !_searchHasMore) return;
 
-    if (genre != 'All') {
-      _executeGenreFilter(genre);
-    } else if (_searchQuery.isNotEmpty) {
-      _executeSearch(_searchQuery);
-    } else {
-      _loadMangaFeeds();
-    }
-  }
+    setState(() => _isLoadingMore = true);
 
-  void _executeGenreFilter(String genre) async {
-    setState(() => _isLoading = true);
-    final results = await MangaService.getMangaByGenre(genre, category: _selectedCategory);
-    if (mounted) {
+    try {
+      final nextPage = _searchPage + 1;
+      final more = await MangaService.searchManga(
+        _searchQuery,
+        category: _selectedCategory,
+        page: nextPage,
+        perPage: 24,
+      );
+
+      if (!mounted || _searchQuery.isEmpty) return;
+
       setState(() {
-        _searchResults = results;
-        _isLoading = false;
+        if (more.isNotEmpty) {
+          final existingIds = _searchItems.map((m) => m.id).toSet();
+          final uniqueNew = more.where((m) => !existingIds.contains(m.id)).toList();
+          _searchItems.addAll(uniqueNew);
+          _searchPage = nextPage;
+        }
+        if (more.length < 24) {
+          _searchHasMore = false;
+        }
+        _isLoadingMore = false;
       });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingMore = false);
     }
   }
+
+  // --------------------------------------------------------------------------
+  // UI BUILDERS
+  // --------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -289,10 +455,12 @@ class _MangaScreenState extends State<MangaScreen> {
                               icon: const Icon(Icons.clear, color: Colors.white60, size: 18),
                               onPressed: () {
                                 _searchController.clear();
-                                setState(() {
-                                  _searchQuery = '';
-                                  _isSearching = false;
-                                });
+                                setState(() => _searchQuery = '');
+                                if (_selectedGenre != 'All') {
+                                  _loadGenreData(_selectedGenre);
+                                } else {
+                                  _loadCategoryData(_selectedCategory);
+                                }
                               },
                             )
                           : null,
@@ -354,13 +522,19 @@ class _MangaScreenState extends State<MangaScreen> {
             ),
             const SizedBox(height: 8),
 
-            // 3. Body: Search/Filter Grid or Home Feeds
+            // 2.5 Dynamic Sub-Genre Filter Chips
+            _buildGenresRow(),
+            const SizedBox(height: 6),
+
+            // 3. Body: Search / Genre Infinite Grid or Home Category Infinite Feed
             Expanded(
               child: _isLoading
                   ? const Center(child: SharinganLoader(size: 52, showLabel: false))
-                  : _isSearching
-                      ? _buildSearchResultsGrid()
-                      : _buildFeedsList(),
+                  : _searchQuery.isNotEmpty
+                      ? _buildSearchGrid(accent)
+                      : _selectedGenre != 'All'
+                          ? _buildGenreGrid(accent)
+                          : _buildCategoryInfiniteView(accent),
             ),
           ],
         ),
@@ -368,16 +542,21 @@ class _MangaScreenState extends State<MangaScreen> {
     );
   }
 
-  Widget _buildSearchResultsGrid() {
-    if (_searchResults.isEmpty) {
+  // --------------------------------------------------------------------------
+  // SUB-VIEWS
+  // --------------------------------------------------------------------------
+
+  /// View when searching text: Infinite Grid with endless scroll
+  Widget _buildSearchGrid(Color accent) {
+    if (_searchItems.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.search_off_rounded, color: Colors.white24, size: 48),
+            const Icon(Icons.search_off_rounded, color: Colors.white24, size: 54),
             const SizedBox(height: 12),
             Text(
-              "No ${_selectedCategory != 'All' ? _selectedCategory : 'manga'} found matching your query.",
+              "No ${_selectedCategory != 'All' ? _selectedCategory : 'manga'} found for '$_searchQuery'.",
               style: const TextStyle(color: ThemeService.textMuted, fontSize: 14),
             ),
           ],
@@ -385,136 +564,300 @@ class _MangaScreenState extends State<MangaScreen> {
       );
     }
 
-    return GridView.builder(
-      padding: const EdgeInsets.all(16),
+    return CustomScrollView(
+      controller: _scrollController,
       physics: const BouncingScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        childAspectRatio: 0.60,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 14,
-      ),
-      itemCount: _searchResults.length,
-      itemBuilder: (context, index) {
-        return _buildMangaCard(_searchResults[index]);
-      },
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: accent.withOpacity(0.3)),
+                  ),
+                  child: Text(
+                    "Search: '$_searchQuery'",
+                    style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  "${_searchItems.length} titles loaded",
+                  style: const TextStyle(color: ThemeService.textMuted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 0.54,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 14,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => _buildMangaCard(_searchItems[index]),
+              childCount: _searchItems.length,
+            ),
+          ),
+        ),
+        if (_isLoadingMore)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2.2, color: accent)),
+            ),
+          ),
+        const SliverToBoxAdapter(child: SizedBox(height: 40)),
+      ],
     );
   }
 
-  Widget _buildFeedsList() {
-    return ListView(
+  /// View when a Genre Chip is selected: Infinite Grid of that specific genre
+  Widget _buildGenreGrid(Color accent) {
+    if (_genreItems.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.search_off_rounded, color: Colors.white24, size: 54),
+            const SizedBox(height: 12),
+            Text(
+              "No ${_selectedCategory != 'All' ? _selectedCategory : 'manga'} found in $_selectedGenre.",
+              style: const TextStyle(color: ThemeService.textMuted, fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+              onPressed: () => _onGenreSelected('All'),
+              child: const Text("Clear Filter"),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return CustomScrollView(
+      controller: _scrollController,
       physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.only(bottom: 30),
-      children: [
-        // Spotlight Carousel
-        if (_spotlight.isNotEmpty) _buildSpotlight(),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: accent.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        "${_selectedCategory != 'All' ? _selectedCategory : 'All'} • $_selectedGenre",
+                        style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () => _onGenreSelected('All'),
+                        child: Icon(Icons.close, size: 14, color: accent),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  "${_genreItems.length} titles loaded",
+                  style: const TextStyle(color: ThemeService.textMuted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 0.54,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 14,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => _buildMangaCard(_genreItems[index]),
+              childCount: _genreItems.length,
+            ),
+          ),
+        ),
+        if (_isLoadingMore)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2.2, color: accent)),
+            ),
+          ),
+        const SliverToBoxAdapter(child: SizedBox(height: 40)),
+      ],
+    );
+  }
 
-        if (_selectedCategory == 'Manhwa') ...[
-          // STRICTLY KOREAN MANHWA
-          _buildSectionHeader("🔥 Trending Manhwa", onSeeAll: () {}),
-          _buildHorizontalRow(_trending),
+  /// Default View for Category (All, Manga, Manhwa, Manhua): Spotlight + Trending + Top Rated + Endless Infinite Grid!
+  Widget _buildCategoryInfiniteView(Color accent) {
+    final cat = _selectedCategory;
+    final spotlight = _categorySpotlight[cat] ?? [];
+    final trending = _categoryTrending[cat] ?? [];
+    final topRated = _categoryTopRated[cat] ?? [];
+    final infinite = _categoryInfinite[cat] ?? [];
 
-          _buildSectionHeader("🇰🇷 Popular Korean Webtoons", onSeeAll: () {}),
-          _buildHorizontalRow(_popularCategory),
+    String infiniteFeedTitle;
+    if (cat == 'Manhwa') {
+      infiniteFeedTitle = "⚡ Endless Korean Webtoons (Infinite)";
+    } else if (cat == 'Manhua') {
+      infiniteFeedTitle = "⚡ Endless Chinese Manhua (Infinite)";
+    } else if (cat == 'Manga') {
+      infiniteFeedTitle = "⚡ Endless Japanese Manga (Infinite)";
+    } else {
+      infiniteFeedTitle = "⚡ Endless Manga & Webtoons Feed (Infinite)";
+    }
 
-          if (_actionHits.isNotEmpty) ...[
-            _buildSectionHeader("⚔️ Action & Leveling Manhwa", onSeeAll: () {}),
-            _buildHorizontalRow(_actionHits),
-          ],
+    return CustomScrollView(
+      controller: _scrollController,
+      physics: const BouncingScrollPhysics(),
+      slivers: [
+        // 1. Spotlight Banner Carousel
+        if (spotlight.isNotEmpty)
+          SliverToBoxAdapter(
+            child: _buildSpotlight(spotlight),
+          ),
 
-          _buildSectionHeader("Explore Genres", onSeeAll: () {}),
-          _buildGenresRow(),
-          const SizedBox(height: 14),
-
-          if (_fantasyHits.isNotEmpty) ...[
-            _buildSectionHeader("✨ Fantasy & Reincarnation Manhwa", onSeeAll: () {}),
-            _buildHorizontalRow(_fantasyHits),
-          ],
-
-          _buildSectionHeader("⭐ Top Rated Manhwa", onSeeAll: () {}),
-          _buildHorizontalRow(_topRated),
-        ] else if (_selectedCategory == 'Manhua') ...[
-          // STRICTLY CHINESE MANHUA
-          _buildSectionHeader("🔥 Trending Manhua", onSeeAll: () {}),
-          _buildHorizontalRow(_trending),
-
-          _buildSectionHeader("🇨🇳 Popular Chinese Cultivation & Action", onSeeAll: () {}),
-          _buildHorizontalRow(_popularCategory),
-
-          if (_actionHits.isNotEmpty) ...[
-            _buildSectionHeader("🥋 Martial Arts & Cultivation Manhua", onSeeAll: () {}),
-            _buildHorizontalRow(_actionHits),
-          ],
-
-          _buildSectionHeader("Explore Genres", onSeeAll: () {}),
-          _buildGenresRow(),
-          const SizedBox(height: 14),
-
-          if (_fantasyHits.isNotEmpty) ...[
-            _buildSectionHeader("🐉 Fantasy & Adventure Manhua", onSeeAll: () {}),
-            _buildHorizontalRow(_fantasyHits),
-          ],
-
-          _buildSectionHeader("⭐ Top Rated Manhua", onSeeAll: () {}),
-          _buildHorizontalRow(_topRated),
-        ] else if (_selectedCategory == 'Manga') ...[
-          // STRICTLY JAPANESE MANGA
-          _buildSectionHeader("🔥 Trending Japanese Manga", onSeeAll: () {}),
-          _buildHorizontalRow(_trending),
-
-          _buildSectionHeader("🇯🇵 Popular Japanese Manga", onSeeAll: () {}),
-          _buildHorizontalRow(_popularCategory),
-
-          if (_actionHits.isNotEmpty) ...[
-            _buildSectionHeader("🗡️ Shonen & Action Hits", onSeeAll: () {}),
-            _buildHorizontalRow(_actionHits),
-          ],
-
-          _buildSectionHeader("Explore Genres", onSeeAll: () {}),
-          _buildGenresRow(),
-          const SizedBox(height: 14),
-
-          if (_fantasyHits.isNotEmpty) ...[
-            _buildSectionHeader("🔮 Supernatural & Dark Fantasy", onSeeAll: () {}),
-            _buildHorizontalRow(_fantasyHits),
-          ],
-
-          _buildSectionHeader("⭐ Top Rated Japanese Manga", onSeeAll: () {}),
-          _buildHorizontalRow(_topRated),
-        ] else ...[
-          // ALL CATEGORIES
-          _buildSectionHeader("🔥 Trending Manga & Webtoons", onSeeAll: () {}),
-          _buildHorizontalRow(_trending),
-
-          _buildSectionHeader("🇰🇷 Popular Korean Manhwa", onSeeAll: () {}),
-          _buildHorizontalRow(_popularManhwa),
-
-          _buildSectionHeader("🇨🇳 Popular Chinese Manhua", onSeeAll: () {}),
-          _buildHorizontalRow(_popularManhua),
-
-          _buildSectionHeader("🇯🇵 Popular Japanese Manga", onSeeAll: () {}),
-          _buildHorizontalRow(_popularManga),
-
-          _buildSectionHeader("Explore Genres", onSeeAll: () {}),
-          _buildGenresRow(),
-          const SizedBox(height: 14),
-
-          _buildSectionHeader("⭐ Top Rated Overall", onSeeAll: () {}),
-          _buildHorizontalRow(_topRated),
+        // 2. Trending Shelf
+        if (trending.isNotEmpty) ...[
+          SliverToBoxAdapter(
+            child: _buildSectionHeader(
+              cat == 'Manhwa'
+                  ? "🔥 Trending Korean Manhwa"
+                  : (cat == 'Manhua'
+                      ? "🔥 Trending Chinese Manhua"
+                      : (cat == 'Manga' ? "🔥 Trending Japanese Manga" : "🔥 Trending Manga & Webtoons")),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: _buildHorizontalRow(trending),
+          ),
         ],
+
+        // 3. Top Rated Shelf
+        if (topRated.isNotEmpty) ...[
+          SliverToBoxAdapter(
+            child: _buildSectionHeader(
+              cat == 'Manhwa'
+                  ? "⭐ Top Rated Korean Webtoons"
+                  : (cat == 'Manhua'
+                      ? "⭐ Top Rated Chinese Cultivation"
+                      : (cat == 'Manga' ? "⭐ Top Rated Japanese Masterpieces" : "⭐ Top Rated Classics Overall")),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: _buildHorizontalRow(topRated),
+          ),
+        ],
+
+        // 4. Endless Infinite Feed Header
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 22, 16, 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        infiniteFeedTitle,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      const Text(
+                        "Continuous endless scrolling catalog",
+                        style: TextStyle(color: ThemeService.textMuted, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    "${infinite.length} titles",
+                    style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // 5. 3-Column Infinite Feed Grid
+        if (infinite.isNotEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.54,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 14,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, index) => _buildMangaCard(infinite[index]),
+                childCount: infinite.length,
+              ),
+            ),
+          ),
+
+        // 6. Loader while fetching next infinite page
+        if (_isLoadingMore)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2.2, color: accent)),
+            ),
+          ),
+
+        const SliverToBoxAdapter(child: SizedBox(height: 50)),
       ],
     );
   }
 
   Widget _buildGenresRow() {
+    final genres = _currentGenres;
     return SizedBox(
       height: 38,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _genres.length,
+        itemCount: genres.length,
         itemBuilder: (context, index) {
-          final g = _genres[index];
+          final g = genres[index];
           final isSelected = _selectedGenre == g;
           return Padding(
             padding: const EdgeInsets.only(right: 8),
@@ -540,13 +883,13 @@ class _MangaScreenState extends State<MangaScreen> {
     );
   }
 
-  Widget _buildSpotlight() {
+  Widget _buildSpotlight(List<AnilistMedia> spotlight) {
     return SizedBox(
       height: 190,
       child: PageView.builder(
-        itemCount: _spotlight.length,
+        itemCount: spotlight.length,
         itemBuilder: (context, index) {
-          final m = _spotlight[index];
+          final m = spotlight[index];
           final bannerUrl = m.bannerImage ?? m.coverImage;
 
           return GestureDetector(
@@ -629,29 +972,25 @@ class _MangaScreenState extends State<MangaScreen> {
     );
   }
 
-  Widget _buildSectionHeader(String title, {required VoidCallback onSeeAll}) {
+  Widget _buildSectionHeader(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16.5,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const Icon(Icons.arrow_forward_ios, color: Colors.white38, size: 13),
-        ],
+      child: Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 16.5,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
 
   Widget _buildHorizontalRow(List<AnilistMedia> list) {
     return SizedBox(
-      height: 200,
+      height: 215,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         physics: const BouncingScrollPhysics(),

@@ -38,6 +38,13 @@ class ShikaiNetworkImage extends StatelessWidget {
       return _buildFallback(context, radius);
     }
 
+    final int targetCacheWidth = width != null
+        ? (width! * 2.2).round().clamp(100, 1080)
+        : (isManga ? 360 : 480);
+    final int? targetCacheHeight = height != null
+        ? (height! * 2.2).round().clamp(140, 1600)
+        : null;
+
     return ClipRRect(
       borderRadius: radius,
       child: Image.network(
@@ -45,6 +52,8 @@ class ShikaiNetworkImage extends StatelessWidget {
         width: width,
         height: height,
         fit: fit,
+        cacheWidth: targetCacheWidth,
+        cacheHeight: targetCacheHeight,
         headers: const {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         },

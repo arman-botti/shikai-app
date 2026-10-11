@@ -7,6 +7,7 @@ import 'package:shikai_app/services/subtitle_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/services/anivexa_service.dart';
+import 'package:shikai_app/services/security_vault.dart';
 import 'package:shikai_app/models/anivexa_episode.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -49,6 +50,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   List<StreamSource> _availableSources = [];
 
   bool _isLoadingStream = false;
+  bool _hasStartedPlayback = false;
   bool _hasError = false;
   String? _errorMessage;
   Timer? _bufferingWatchdog;
@@ -206,7 +208,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       id: 'anizone',
       serverName: 'Shikai • Zone (Adaptive HQ)',
       streamUrl: '${StreamService.shikaiBaseUrl}/api/anivexa/stream/${widget.anilistId}/$_currentEpisode.m3u8?server=anizone&audio=$_currentAudioMode&title=$encodedTitle',
-      referer: 'https://anizone.to/',
+      referer: SecurityVault.anizoneReferer,
       quality: '1080p / 720p Adaptive',
       audioType: _currentAudioMode == 'dub' ? 'English Dub' : 'Japanese Sub',
       introStart: 30,
@@ -218,7 +220,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       id: 'anivexa',
       serverName: 'Tsukuyomi (HD-2 Direct)',
       streamUrl: '${StreamService.shikaiBaseUrl}/api/anivexa/stream/${widget.anilistId}/$_currentEpisode.m3u8?server=hd2&audio=$_currentAudioMode&title=$encodedTitle',
-      referer: 'https://flixcloud.cc/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Direct Master',
       audioType: _currentAudioMode == 'dub' ? 'English Dub' : 'Japanese Sub',
       introStart: 30,
@@ -230,7 +232,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       id: 'reanime',
       serverName: 'Kamui (HD-1 Fast)',
       streamUrl: '${StreamService.shikaiBaseUrl}/api/anivexa/stream/${widget.anilistId}/$_currentEpisode.m3u8?server=hd1&audio=$_currentAudioMode&title=$encodedTitle',
-      referer: 'https://flixcloud.cc/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Fast Mirror',
       audioType: _currentAudioMode == 'dub' ? 'English Dub' : 'Japanese Sub',
       introStart: 30,
@@ -242,7 +244,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       id: 'miruro',
       serverName: 'Rinnegan (Global HD)',
       streamUrl: '${StreamService.shikaiBaseUrl}/api/miruro/stream/${widget.anilistId}/$_currentEpisode.m3u8?audio=$_currentAudioMode&title=$encodedTitle',
-      referer: 'https://www.miruro.tv/',
+      referer: SecurityVault.flixReferer,
       quality: '1080p Global Direct',
       audioType: _currentAudioMode == 'dub' ? 'English Dub' : 'Japanese Sub',
       isZeroBandwidth: true,
@@ -252,7 +254,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       id: 'desidub',
       serverName: 'Chidori (Hindi Dub 🇮🇳)',
       streamUrl: '${StreamService.shikaiBaseUrl}/api/desidub/stream/${widget.anilistId}/$_currentEpisode',
-      referer: 'https://vidmoly.net/',
+      referer: SecurityVault.vidmolyReferer,
       quality: '720p HD Hindi',
       audioType: 'Hindi Dub',
       isZeroBandwidth: true,
@@ -380,6 +382,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     _initTimeoutTimer?.cancel();
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
+    _hasStartedPlayback = false;
 
     setState(() {
       _isLoadingStream = true;
@@ -414,12 +417,12 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
 
     _controller = controller;
 
-    // 5-Second Connection Timeout Watchdog: prevents infinite spinner if upstream hangs!
-    _initTimeoutTimer = Timer(const Duration(seconds: 5), () {
+    // 15-Second Connection Timeout Watchdog: relaxed so slow CDNs/mobile networks have ample time to establish stream
+    _initTimeoutTimer = Timer(const Duration(seconds: 15), () {
       if (!mounted || _controller != controller) return;
-      if (_isLoadingStream) {
-        debugPrint('[Player] Connection timed out on ${_currentSource?.serverName} (5s) -> triggering smart failover');
-        _failoverToNextSource('Connection timed out (5s)');
+      if (_isLoadingStream && !_hasStartedPlayback) {
+        debugPrint('[Player] Connection timed out on ${_currentSource?.serverName} (15s) -> triggering smart failover');
+        _failoverToNextSource('Connection timed out (15s)');
       }
     });
 
@@ -433,6 +436,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       });
 
       controller.play().catchError((_) {});
+      _hasStartedPlayback = true;
       controller.setPlaybackSpeed(_playbackSpeed);
       _scheduleControlsHide();
 
@@ -454,7 +458,9 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       _initTimeoutTimer?.cancel();
       if (!mounted || _controller != controller) return;
       debugPrint('[Player] Error initializing ${_currentSource?.serverName}: $error');
-      _failoverToNextSource(error.toString());
+      if (!_hasStartedPlayback) {
+        _failoverToNextSource(error.toString());
+      }
     });
 
     controller.addListener(_videoPlayerListener);
@@ -464,6 +470,14 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     _initTimeoutTimer?.cancel();
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
+
+    // RELAXED FALLBACK: Fallback is strictly restricted to INITIAL video startup/loading.
+    // If the episode has already started playing, NEVER switch servers automatically mid-playback
+    // or during skipping/seeking!
+    if (_hasStartedPlayback) {
+      debugPrint('[Player] Playback already active. Suppressing automatic server swap on event: $reason');
+      return;
+    }
 
     final currentIndex = _availableSources.indexWhere((s) => s.id == _currentSource?.id);
     if (currentIndex >= 0 && currentIndex + 1 < _availableSources.length) {
@@ -514,19 +528,34 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   void _videoPlayerListener() {
     if (!mounted || !_isControllerReady) return;
 
-    // Runtime error detection for automatic smart failover
+    // Detect when video has actually started playing
+    if (!_hasStartedPlayback && (_controller!.value.isPlaying || _controller!.value.position > Duration.zero)) {
+      _hasStartedPlayback = true;
+      _initTimeoutTimer?.cancel();
+      _bufferingWatchdog?.cancel();
+      _bufferingWatchdog = null;
+    }
+
+    // Runtime error detection for automatic smart failover - ONLY during initial startup!
     if (_controller!.value.hasError) {
-      debugPrint('[Player] Runtime playback error detected in ${_currentSource?.serverName}: ${_controller!.value.errorDescription}');
-      _failoverToNextSource(_controller!.value.errorDescription);
+      debugPrint('[Player] Runtime playback error in ${_currentSource?.serverName}: ${_controller!.value.errorDescription}');
+      if (!_hasStartedPlayback) {
+        _failoverToNextSource(_controller!.value.errorDescription);
+      }
       return;
     }
 
-    // 6-Second Buffering Watchdog: auto-swaps if video is stalled buffering without progressing
-    if (_controller!.value.isBuffering) {
-      _bufferingWatchdog ??= Timer(const Duration(seconds: 6), () {
-        if (mounted && _controller != null && _controller!.value.isBuffering && !_controller!.value.isPlaying) {
-          debugPrint('[Player] Buffering stalled > 6s on ${_currentSource?.serverName} -> auto failover');
-          _failoverToNextSource('Stream stalled while buffering');
+    // Mid-playback buffering: Buffering during seeking/skipping or network variation is normal video behavior.
+    // We cancel any watchdog once playback has started so it never kills the working stream!
+    if (_hasStartedPlayback) {
+      _bufferingWatchdog?.cancel();
+      _bufferingWatchdog = null;
+    } else if (_controller!.value.isBuffering) {
+      // Relaxed 15-second watchdog ONLY during initial startup if stream is completely frozen before first play
+      _bufferingWatchdog ??= Timer(const Duration(seconds: 15), () {
+        if (mounted && _controller != null && !_hasStartedPlayback && _controller!.value.isBuffering && !_controller!.value.isPlaying) {
+          debugPrint('[Player] Initial startup buffering stalled > 15s on ${_currentSource?.serverName} -> failover');
+          _failoverToNextSource('Initial stream stalled while buffering');
         }
       });
     } else {
@@ -1336,25 +1365,41 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     final position = _isControllerReady ? _controller!.value.position : Duration.zero;
     final duration = _isControllerReady ? _controller!.value.duration : Duration.zero;
 
+    // Calculate maximum pre-buffered position for the white buffer line
+    double maxBufferedSeconds = 0.0;
+    if (_isControllerReady) {
+      for (final range in _controller!.value.buffered) {
+        final endSec = range.end.inMilliseconds / 1000.0;
+        if (endSec > maxBufferedSeconds) {
+          maxBufferedSeconds = endSec;
+        }
+      }
+    }
+    final totalSec = duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
+    final posSec = position.inSeconds.toDouble().clamp(0.0, totalSec);
+    final secondarySec = maxBufferedSeconds.clamp(posSec, totalSec);
+
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: 12, vertical: isPortrait ? 2 : 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Scrubber
+          // Scrubber with YouTube-style White Pre-Buffer Track
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
               thumbColor: ThemeService.currentAccent,
               activeTrackColor: ThemeService.currentAccent,
+              secondaryActiveTrackColor: Colors.white.withOpacity(0.65), // Pre-buffer white line
               inactiveTrackColor: Colors.white24,
-              trackHeight: 2.5,
+              trackHeight: isPortrait ? 2.8 : 3.2,
               thumbShape: RoundSliderThumbShape(enabledThumbRadius: isPortrait ? 4.5 : 6),
               overlayShape: RoundSliderOverlayShape(overlayRadius: isPortrait ? 9 : 12),
             ),
             child: Slider(
-              value: position.inSeconds.toDouble().clamp(0.0, duration.inSeconds.toDouble()),
+              value: posSec,
+              secondaryTrackValue: secondarySec,
               min: 0.0,
-              max: duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0,
+              max: totalSec,
               onChanged: (val) {
                 _controller?.seekTo(Duration(seconds: val.round()));
               },
@@ -1796,79 +1841,90 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF11131A),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.dns_rounded, color: Colors.white70, size: 20),
-                    SizedBox(width: 8),
-                    Text("SELECT STREAMING SERVER", style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                ..._availableSources.map((source) {
-                  final isSelected = source.id == _currentSource?.id;
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    decoration: BoxDecoration(
-                      color: isSelected ? ThemeService.currentAccent.withOpacity(0.12) : Colors.white.withOpacity(0.04),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isSelected ? ThemeService.currentAccent : Colors.white10,
-                        width: isSelected ? 1.5 : 1.0,
-                      ),
-                    ),
-                    child: ListTile(
-                      leading: Icon(
-                        source.id == 'anikoto'
-                            ? Icons.bolt_rounded
-                            : (source.id == 'anizone'
-                                ? Icons.waves_rounded
-                                : (source.id == 'anivexa'
-                                    ? Icons.remove_red_eye_rounded
-                                    : (source.id == 'reanime'
-                                        ? Icons.speed_rounded
-                                        : (source.id == 'miruro'
-                                            ? Icons.public_rounded
-                                            : (source.id == 'desidub'
-                                                ? Icons.translate_rounded
-                                                : Icons.stream_rounded))))),
-                        color: isSelected ? ThemeService.currentAccent : Colors.white70,
-                      ),
-                      title: Text(
-                        source.serverName,
-                        style: TextStyle(
-                          color: isSelected ? Colors.white : Colors.white.withOpacity(0.85),
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.72,
+            ),
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.dns_rounded, color: Colors.white70, size: 20),
+                      SizedBox(width: 8),
+                      Text("SELECT STREAMING SERVER", style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  ..._availableSources.map((source) {
+                    final isSelected = source.id == _currentSource?.id;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      decoration: BoxDecoration(
+                        color: isSelected ? ThemeService.currentAccent.withOpacity(0.12) : Colors.white.withOpacity(0.04),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isSelected ? ThemeService.currentAccent : Colors.white10,
+                          width: isSelected ? 1.5 : 1.0,
                         ),
                       ),
-                      subtitle: Text(
-                        source.quality,
-                        style: TextStyle(color: isSelected ? ThemeService.currentAccent.withOpacity(0.8) : Colors.white38, fontSize: 11),
+                      child: ListTile(
+                        leading: Icon(
+                          source.id == 'anikoto'
+                              ? Icons.bolt_rounded
+                              : (source.id == 'anizone'
+                                  ? Icons.waves_rounded
+                                  : (source.id == 'anivexa'
+                                      ? Icons.remove_red_eye_rounded
+                                      : (source.id == 'reanime'
+                                          ? Icons.speed_rounded
+                                          : (source.id == 'miruro'
+                                              ? Icons.public_rounded
+                                              : (source.id == 'desidub'
+                                                  ? Icons.translate_rounded
+                                                  : Icons.stream_rounded))))),
+                          color: isSelected ? ThemeService.currentAccent : Colors.white70,
+                        ),
+                        title: Text(
+                          source.serverName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isSelected ? Colors.white : Colors.white.withOpacity(0.85),
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          ),
+                        ),
+                        subtitle: Text(
+                          source.quality,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: isSelected ? ThemeService.currentAccent.withOpacity(0.8) : Colors.white38, fontSize: 11),
+                        ),
+                        trailing: isSelected
+                            ? Icon(Icons.check_circle_rounded, color: ThemeService.currentAccent, size: 20)
+                            : null,
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          if (!isSelected) {
+                            setState(() {
+                              _currentSource = source;
+                            });
+                            _initPlayer();
+                          }
+                        },
                       ),
-                      trailing: isSelected
-                          ? Icon(Icons.check_circle_rounded, color: ThemeService.currentAccent, size: 20)
-                          : null,
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        if (!isSelected) {
-                          setState(() {
-                            _currentSource = source;
-                          });
-                          _initPlayer();
-                        }
-                      },
-                    ),
-                  );
-                }),
-              ],
+                    );
+                  }),
+                ],
+              ),
             ),
           ),
         );

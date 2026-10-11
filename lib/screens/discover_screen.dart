@@ -103,7 +103,11 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     });
   }
 
+  int _requestId = 0;
+
   Future<void> _loadResults({bool refresh = false}) async {
+    final int thisRequestId = ++_requestId;
+
     if (refresh) {
       setState(() {
         _isLoading = true;
@@ -116,7 +120,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       });
     }
 
-    final newItems = await AnilistService.advancedFilter(
+    List<AnilistMedia> newItems = await AnilistService.advancedFilter(
       query: _searchQuery.isNotEmpty ? _searchQuery : null,
       format: _selectedFormat,
       genre: _selectedGenre,
@@ -126,21 +130,30 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       perPage: 21,
     );
 
-    if (mounted) {
-      setState(() {
-        if (refresh) {
-          _animeList.clear();
-        }
-        _animeList.addAll(newItems);
-        _isLoading = false;
-        _isLoadingMore = false;
-        if (newItems.length < 21) {
-          _hasMore = false;
-        } else {
-          _page++;
-        }
-      });
+    // If initial query returned empty and not searching, fallback to trending so screen is never blank
+    if (newItems.isEmpty && refresh && _searchQuery.isEmpty && _selectedFormat == 'All' && _selectedGenre == 'All') {
+      newItems = await AnilistService.getTrendingAnime(page: 1, perPage: 21);
     }
+
+    if (!mounted || thisRequestId != _requestId) return;
+
+    setState(() {
+      if (refresh) {
+        if (newItems.isNotEmpty || _animeList.isEmpty) {
+          _animeList.clear();
+          _animeList.addAll(newItems);
+        }
+      } else {
+        _animeList.addAll(newItems);
+      }
+      _isLoading = false;
+      _isLoadingMore = false;
+      if (newItems.length < 21) {
+        _hasMore = false;
+      } else {
+        _page++;
+      }
+    });
   }
 
   void _resetFilters() {

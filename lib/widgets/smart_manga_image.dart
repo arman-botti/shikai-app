@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shikai_app/services/theme_service.dart';
 
 class MangaDescrambler {
   static const Map<String, String> _imgKeys = {
@@ -93,72 +95,180 @@ class DescramblePainter extends CustomPainter {
 }
 
 /// Smart Manga Image Widget: Automatically detects scrambled webtoon pages
-/// and unscrambles them dynamically via GPU canvas, eliminating "tukda tukda" distortions!
+/// and unscrambles them dynamically via GPU canvas, with 3x auto-retry, bounded in-memory caching,
+/// and interactive tap-to-retry recovery.
 class SmartMangaImage extends StatefulWidget {
   final String imageUrl;
   final Map<String, String> headers;
   final BoxFit fit;
+  final int? pageIndex;
+  final VoidCallback? onLoaded;
 
   const SmartMangaImage({
     Key? key,
     required this.imageUrl,
     required this.headers,
     this.fit = BoxFit.fitWidth,
+    this.pageIndex,
+    this.onLoaded,
   }) : super(key: key);
+
+  // Shared bounded in-memory cache to eliminate re-downloads across scrolling
+  static final Map<String, Uint8List> _imageCache = {};
+  static final Map<String, ui.Image> _uiImageCache = {};
+  static const int _maxCacheEntries = 160;
+
+  static void clearCache() {
+    _imageCache.clear();
+    _uiImageCache.clear();
+  }
+
+  /// Proactive prefetch helper for upcoming pages in chapter
+  static Future<void> prefetch(String url, Map<String, String> headers) async {
+    if (_imageCache.containsKey(url) || _uiImageCache.containsKey(url)) return;
+    try {
+      final res = await http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 12));
+      if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+        if (_imageCache.length >= _maxCacheEntries) {
+          _imageCache.remove(_imageCache.keys.first);
+        }
+        _imageCache[url] = res.bodyBytes;
+      }
+    } catch (_) {}
+  }
 
   @override
   State<SmartMangaImage> createState() => _SmartMangaImageState();
 }
 
-class _SmartMangaImageState extends State<SmartMangaImage> {
+class _SmartMangaImageState extends State<SmartMangaImage> with AutomaticKeepAliveClientMixin {
+  Uint8List? _imageBytes;
   ui.Image? _descrambledUiImage;
-  bool _isLoading = false;
+  bool _isLoading = true;
   bool _hasError = false;
+  int _retryAttempt = 0;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    if (MangaDescrambler.isScrambled(widget.imageUrl)) {
-      _loadAndDescramble();
-    }
+    _loadImage();
   }
 
   @override
   void didUpdateWidget(SmartMangaImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.imageUrl != widget.imageUrl) {
-      if (MangaDescrambler.isScrambled(widget.imageUrl)) {
-        _loadAndDescramble();
-      } else {
-        setState(() => _descrambledUiImage = null);
-      }
+      _loadImage();
     }
   }
 
-  Future<void> _loadAndDescramble() async {
+  Future<void> _loadImage({bool isManualRetry = false}) async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _hasError = false;
+      if (isManualRetry) _retryAttempt = 0;
     });
 
-    try {
-      final res = await http.get(
-        Uri.parse(widget.imageUrl),
-        headers: widget.headers,
-      ).timeout(const Duration(seconds: 12));
+    final isScrambled = MangaDescrambler.isScrambled(widget.imageUrl);
 
-      if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
-        final codec = await ui.instantiateImageCodec(res.bodyBytes);
-        final frame = await codec.getNextFrame();
-        if (mounted) {
-          setState(() {
-            _descrambledUiImage = frame.image;
-            _isLoading = false;
-          });
-        }
-        return;
+    // 1. Check decoded in-memory cache for scrambled images
+    if (isScrambled && SmartMangaImage._uiImageCache.containsKey(widget.imageUrl)) {
+      if (mounted) {
+        setState(() {
+          _descrambledUiImage = SmartMangaImage._uiImageCache[widget.imageUrl];
+          _isLoading = false;
+        });
+        widget.onLoaded?.call();
       }
-    } catch (_) {}
+      return;
+    }
+
+    // 2. Check byte cache for regular images
+    if (!isScrambled && SmartMangaImage._imageCache.containsKey(widget.imageUrl)) {
+      if (mounted) {
+        setState(() {
+          _imageBytes = SmartMangaImage._imageCache[widget.imageUrl];
+          _isLoading = false;
+        });
+        widget.onLoaded?.call();
+      }
+      return;
+    }
+
+    // 3. Multi-attempt resilient download with exponential backoff & failovers
+    const int maxRetries = 3;
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      if (!mounted) return;
+      setState(() => _retryAttempt = attempt);
+
+      try {
+        var headersToUse = Map<String, String>.from(widget.headers);
+        String targetUrl = widget.imageUrl;
+
+        // Fallback: If retry attempt 2+, check for MangaDex at-home node failure
+        if (attempt >= 2) {
+          final uri = Uri.tryParse(targetUrl);
+          if (uri != null) {
+            // MangaDex node failover to official uploads server
+            if (uri.path.contains('/data/') &&
+                (uri.host.contains('mangadex') || uri.host.contains('mangadex.network')) &&
+                !uri.host.contains('uploads.mangadex.org')) {
+              targetUrl = 'https://uploads.mangadex.org${uri.path}';
+              headersToUse['Referer'] = 'https://mangadex.org/';
+            } else if (headersToUse.containsKey('Referer')) {
+              headersToUse['Referer'] = '${uri.scheme}://${uri.host}/';
+            }
+          }
+        }
+
+        final res = await http.get(
+          Uri.parse(targetUrl),
+          headers: headersToUse,
+        ).timeout(const Duration(seconds: 15));
+
+        if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+          // Bounded cache insert
+          if (SmartMangaImage._imageCache.length >= SmartMangaImage._maxCacheEntries) {
+            SmartMangaImage._imageCache.remove(SmartMangaImage._imageCache.keys.first);
+          }
+          SmartMangaImage._imageCache[widget.imageUrl] = res.bodyBytes;
+
+          if (isScrambled) {
+            final codec = await ui.instantiateImageCodec(res.bodyBytes);
+            final frame = await codec.getNextFrame();
+            if (SmartMangaImage._uiImageCache.length >= SmartMangaImage._maxCacheEntries) {
+              SmartMangaImage._uiImageCache.remove(SmartMangaImage._uiImageCache.keys.first);
+            }
+            SmartMangaImage._uiImageCache[widget.imageUrl] = frame.image;
+            if (mounted) {
+              setState(() {
+                _descrambledUiImage = frame.image;
+                _isLoading = false;
+              });
+              widget.onLoaded?.call();
+            }
+            return;
+          } else {
+            if (mounted) {
+              setState(() {
+                _imageBytes = res.bodyBytes;
+                _isLoading = false;
+              });
+              widget.onLoaded?.call();
+            }
+            return;
+          }
+        }
+      } catch (_) {
+        if (attempt < maxRetries) {
+          await Future.delayed(Duration(milliseconds: 500 * attempt));
+        }
+      }
+    }
 
     if (mounted) {
       setState(() {
@@ -170,32 +280,82 @@ class _SmartMangaImageState extends State<SmartMangaImage> {
 
   @override
   Widget build(BuildContext context) {
-    final isScrambled = MangaDescrambler.isScrambled(widget.imageUrl);
+    super.build(context);
 
-    if (isScrambled) {
-      if (_isLoading) {
-        return Container(
-          height: 380,
-          color: const Color(0xFF0F1117),
-          child: const Center(
-            child: SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24),
+    if (_isLoading) {
+      return Container(
+        height: 380,
+        color: const Color(0xFF0F1117),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24),
+              ),
+              if (widget.pageIndex != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _retryAttempt > 1
+                      ? 'Retrying page ${widget.pageIndex} (attempt $_retryAttempt/3)...'
+                      : 'Loading page ${widget.pageIndex}...',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_hasError) {
+      return GestureDetector(
+        onTap: () => _loadImage(isManualRetry: true),
+        child: Container(
+          height: 230,
+          margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF141721),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.broken_image_outlined, color: Colors.redAccent, size: 36),
+                const SizedBox(height: 10),
+                Text(
+                  widget.pageIndex != null ? 'Page ${widget.pageIndex} failed to load' : 'Failed to load page',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Connection drop or blocked CDN. Tap to retry.',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ThemeService.currentAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () => _loadImage(isManualRetry: true),
+                  icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+                  label: const Text('Tap to Retry', style: TextStyle(fontSize: 12, color: Colors.white)),
+                ),
+              ],
             ),
           ),
-        );
-      }
-      if (_hasError || _descrambledUiImage == null) {
-        return Container(
-          height: 200,
-          color: Colors.black26,
-          child: const Center(
-            child: Icon(Icons.broken_image, color: Colors.white30, size: 36),
-          ),
-        );
-      }
+        ),
+      );
+    }
 
+    final isScrambled = MangaDescrambler.isScrambled(widget.imageUrl);
+    if (isScrambled && _descrambledUiImage != null) {
       final keys = MangaDescrambler.getUnscrambleKey(widget.imageUrl);
       final img = _descrambledUiImage!;
 
@@ -225,32 +385,15 @@ class _SmartMangaImageState extends State<SmartMangaImage> {
       );
     }
 
-    // Default regular unscrambled image
-    return Image.network(
-      widget.imageUrl,
-      fit: widget.fit,
-      headers: widget.headers,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return Container(
-          height: 380,
-          color: const Color(0xFF0F1117),
-          child: const Center(
-            child: SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24),
-            ),
-          ),
-        );
-      },
-      errorBuilder: (_, __, ___) => Container(
-        height: 200,
-        color: Colors.black26,
-        child: const Center(
-          child: Icon(Icons.broken_image, color: Colors.white30, size: 36),
-        ),
-      ),
-    );
+    // Regular image rendered from memory bytes with zero network flicker
+    if (_imageBytes != null) {
+      return Image.memory(
+        _imageBytes!,
+        fit: widget.fit,
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 }
+

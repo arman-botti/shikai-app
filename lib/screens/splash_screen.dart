@@ -2,13 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shikai_app/main.dart';
-import 'package:shikai_app/services/theme_service.dart';
+import 'package:shikai_app/services/app_preload_service.dart';
 
 /// ---------------------------------------------------------------------------
-/// SHIKAI MUSE-STYLE CINEMATIC OPENING SCREEN
-/// Inspired by the minimalist Japanese anime aesthetic of Muse.
-/// Features a breathing reiatsu pulse, glowing katana emblem reveal,
-/// kinetic kanji typography, and a seamless dissolve transition to Home.
+/// SHIKAI CINEMATIC MINIMALIST OPENING SCREEN
+/// Inspired by high-end Japanese anime streaming aesthetic (Muse / Sony).
+/// Pure OLED black void, soft atmospheric spiritual glow, iconic katana emblem,
+/// razor-sharp typography, and live background preloading into GPU memory.
 /// ---------------------------------------------------------------------------
 class SplashScreen extends StatefulWidget {
   const SplashScreen({Key? key}) : super(key: key);
@@ -20,84 +20,109 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
   late AnimationController _revealController;
   late AnimationController _pulseController;
-  late AnimationController _laserController;
+  late AnimationController _progressController;
 
   late Animation<double> _scaleAnimation;
   late Animation<double> _fadeAnimation;
   late Animation<double> _textFadeAnimation;
-  late Animation<Offset> _textSlideAnimation;
-  late Animation<double> _laserProgress;
+  late Animation<double> _progressAnimation;
+
+  bool _navigated = false;
 
   @override
   void initState() {
     super.initState();
 
-    // Lock to edge-to-edge immersive mode on start
+    // Edge-to-edge transparent system bars for seamless immersion
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
 
-    // 1. Reveal Animation (Scale + Fade in over 1200ms)
+    // 1. Reveal Animation (Gentle micro-scale 0.94 -> 1.0 + fade in)
     _revealController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1200),
+      duration: const Duration(milliseconds: 900),
     );
 
-    _scaleAnimation = CurvedAnimation(
-      parent: _revealController,
-      curve: Curves.easeOutBack,
+    _scaleAnimation = Tween<double>(begin: 0.94, end: 1.0).animate(
+      CurvedAnimation(parent: _revealController, curve: Curves.easeOutCubic),
     );
 
     _fadeAnimation = CurvedAnimation(
       parent: _revealController,
-      curve: const Interval(0.0, 0.65, curve: Curves.easeIn),
+      curve: const Interval(0.0, 0.7, curve: Curves.easeOut),
     );
 
     _textFadeAnimation = CurvedAnimation(
       parent: _revealController,
-      curve: const Interval(0.35, 1.0, curve: Curves.easeIn),
+      curve: const Interval(0.25, 1.0, curve: Curves.easeOut),
     );
 
-    _textSlideAnimation = Tween<Offset>(
-      begin: const Offset(0.0, 0.25),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _revealController,
-      curve: const Interval(0.35, 1.0, curve: Curves.easeOutCubic),
-    ));
-
-    // 2. Breathing Pulse Aura Animation (repeats continuously)
+    // 2. Soft Breathing Backlight Glow (Subtle 0.10 -> 0.18 pulse)
     _pulseController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2200),
+      duration: const Duration(milliseconds: 2000),
     )..repeat(reverse: true);
 
-    // 3. Laser Beam Progress Animation
-    _laserController = AnimationController(
+    // 3. Ultra-thin progress indicator
+    _progressController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: const Duration(milliseconds: 1400),
     );
 
-    _laserProgress = CurvedAnimation(
-      parent: _laserController,
+    _progressAnimation = CurvedAnimation(
+      parent: _progressController,
       curve: Curves.easeInOutCubic,
     );
 
-    // Kick off animations
     _revealController.forward();
-    _laserController.forward();
+    _progressController.forward();
 
-    // 4. Seamless Transition into Shikai Home Screen after 2.4s
-    Timer(const Duration(milliseconds: 2400), _navigateToHome);
+    // 4. Start background data preloading as soon as the first frame is rendered
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startBackgroundPreloadAndNavigate();
+    });
+  }
+
+  Future<void> _startBackgroundPreloadAndNavigate() async {
+    try {
+      // Warm up metadata and precache hero banners & posters into GPU memory
+      await Future.any([
+        Future.wait([
+          AppPreloadService.preloadAll(context),
+          Future.delayed(const Duration(milliseconds: 1350)), // Minimum aesthetic dwell time
+        ]),
+        Future.delayed(const Duration(milliseconds: 2200)), // Safety timeout
+      ]);
+    } catch (_) {}
+
+    // Complete the progress animation smoothly if not yet done
+    if (mounted && _progressController.status != AnimationStatus.completed) {
+      _progressController.animateTo(1.0, duration: const Duration(milliseconds: 200));
+      await Future.delayed(const Duration(milliseconds: 120));
+    }
+
+    _navigateToHome();
   }
 
   void _navigateToHome() {
-    if (!mounted) return;
+    if (!mounted || _navigated) return;
+    _navigated = true;
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 600),
+        transitionDuration: const Duration(milliseconds: 450),
         pageBuilder: (context, animation, secondaryAnimation) => const ShikaiHomeScreen(),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
-            opacity: animation,
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            ),
             child: child,
           );
         },
@@ -109,261 +134,171 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   void dispose() {
     _revealController.dispose();
     _pulseController.dispose();
-    _laserController.dispose();
+    _progressController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final accent = ThemeService.currentAccent;
+    const crimsonAccent = Color(0xFFE50914);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090A0F), // Deep obsidian void canvas
+      backgroundColor: const Color(0xFF000000), // Pure OLED dark canvas
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Background Atmospheric Radial Ambient Glow
+          // Atmospheric Optical Center Glow (Soft Gaussian Backlight)
           AnimatedBuilder(
             animation: _pulseController,
             builder: (context, child) {
               final pulse = _pulseController.value;
-              return Container(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment.center,
-                    radius: 0.85 + (pulse * 0.15),
-                    colors: [
-                      accent.withOpacity(0.12 + (pulse * 0.08)),
-                      accent.withOpacity(0.03),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.55, 1.0],
+              return Center(
+                child: Container(
+                  width: 280,
+                  height: 280,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        crimsonAccent.withOpacity(0.12 + (pulse * 0.06)),
+                        crimsonAccent.withOpacity(0.03),
+                        Colors.transparent,
+                      ],
+                      stops: const [0.0, 0.5, 1.0],
+                    ),
                   ),
                 ),
               );
             },
           ),
 
-          // Central Hero Composition
+          // Central Minimalist Composition
           Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Glowing Breathing Aura + Shikai Katana Emblem
-                AnimatedBuilder(
-                  animation: Listenable.merge([_scaleAnimation, _pulseController]),
-                  builder: (context, child) {
-                    final pulse = _pulseController.value;
-                    final scale = _scaleAnimation.value;
+            child: FadeTransition(
+              opacity: _fadeAnimation,
+              child: ScaleTransition(
+                scale: _scaleAnimation,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Clean Floating Shikai Katana Emblem (No tacky outer rings)
+                    Container(
+                      width: 90,
+                      height: 90,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.9),
+                            blurRadius: 28,
+                            offset: const Offset(0, 8),
+                          ),
+                          BoxShadow(
+                            color: crimsonAccent.withOpacity(0.25),
+                            blurRadius: 20,
+                            spreadRadius: -2,
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(22),
+                        child: Image.asset(
+                          'assets/app_icon.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Center(
+                            child: Icon(Icons.flash_on_rounded, color: crimsonAccent, size: 48),
+                          ),
+                        ),
+                      ),
+                    ),
 
-                    return Transform.scale(
-                      scale: scale,
-                      child: Stack(
-                        alignment: Alignment.center,
+                    const SizedBox(height: 22),
+
+                    // Refined Brand Typography
+                    FadeTransition(
+                      opacity: _textFadeAnimation,
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Outer Spiritual Ring Ripple 1
-                          Container(
-                            width: 140 + (pulse * 24),
-                            height: 140 + (pulse * 24),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: accent.withOpacity((0.25 - (pulse * 0.15)).clamp(0.0, 1.0)),
-                                width: 1.5,
-                              ),
+                          // S H I K A I
+                          Text(
+                            "SHIKAI",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 9.0,
                             ),
                           ),
 
-                          // Inner Breathing Aura Ring 2
-                          Container(
-                            width: 120 + (pulse * 12),
-                            height: 120 + (pulse * 12),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: accent.withOpacity(0.25 + (pulse * 0.2)),
-                                  blurRadius: 32 + (pulse * 16),
-                                  spreadRadius: 2 + (pulse * 4),
-                                ),
-                              ],
-                            ),
-                          ),
+                          SizedBox(height: 6),
 
-                          // Emblem Icon Container
-                          Container(
-                            width: 104,
-                            height: 104,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF11131C),
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: accent.withOpacity(0.55),
-                                width: 2.0,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.85),
-                                  blurRadius: 16,
-                                  offset: const Offset(0, 6),
-                                ),
-                              ],
-                            ),
-                            child: ClipOval(
-                              child: Image.asset(
-                                'assets/app_icon.png',
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Center(
-                                  child: Icon(Icons.flash_on_rounded, color: accent, size: 52),
-                                ),
-                              ),
+                          // Minimal Kanji Subtitle
+                          Text(
+                            "始 解",
+                            style: TextStyle(
+                              color: crimsonAccent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 6.0,
                             ),
                           ),
                         ],
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
+              ),
+            ),
+          ),
 
-                const SizedBox(height: 28),
-
-                // Kinetic Typography (Slide + Fade)
-                SlideTransition(
-                  position: _textSlideAnimation,
-                  child: FadeTransition(
-                    opacity: _textFadeAnimation,
-                    child: Column(
+          // Bottom Razor-Thin Progress Line (Ultra-minimalist)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 44,
+            child: FadeTransition(
+              opacity: _fadeAnimation,
+              child: Center(
+                child: SizedBox(
+                  width: 100,
+                  height: 1.5,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(1),
+                    child: Stack(
                       children: [
-                        // Main Brand Name with wide Japanese spacing
-                        Text(
-                          "SHIKAI",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 26,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 10.0,
-                            shadows: [
-                              Shadow(
-                                color: accent.withOpacity(0.7),
-                                blurRadius: 20,
-                              ),
-                              const Shadow(
-                                color: Colors.black87,
-                                blurRadius: 10,
-                                offset: Offset(0, 4),
-                              ),
-                            ],
-                          ),
+                        Container(
+                          color: Colors.white.withOpacity(0.06),
                         ),
-
-                        const SizedBox(height: 8),
-
-                        // Kanji Subtitle
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(width: 20, height: 1, color: accent.withOpacity(0.4)),
-                            const SizedBox(width: 8),
-                            Text(
-                              "始 解 • RELEASE",
-                              style: TextStyle(
-                                color: accent,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 3.5,
+                        AnimatedBuilder(
+                          animation: _progressAnimation,
+                          builder: (context, child) {
+                            return FractionallySizedBox(
+                              widthFactor: _progressAnimation.value.clamp(0.0, 1.0),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF8B0000),
+                                      crimsonAccent,
+                                      Colors.white,
+                                    ],
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: crimsonAccent.withOpacity(0.8),
+                                      blurRadius: 6,
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Container(width: 20, height: 1, color: accent.withOpacity(0.4)),
-                          ],
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        // Elegant Tagline
-                        const Text(
-                          "Release Your Anime",
-                          style: TextStyle(
-                            color: Color(0xFF8E92A4),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 2.5,
-                          ),
+                            );
+                          },
                         ),
                       ],
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
-
-          // Bottom Laser Loading Indicator & Footnote
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 48,
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: Column(
-                children: [
-                  // Sleek Laser Loading Beam
-                  SizedBox(
-                    width: 140,
-                    height: 2.5,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(2),
-                      child: Stack(
-                        children: [
-                          Container(
-                            color: Colors.white10,
-                          ),
-                          AnimatedBuilder(
-                            animation: _laserProgress,
-                            builder: (context, child) {
-                              return Align(
-                                alignment: Alignment.centerLeft,
-                                child: FractionallySizedBox(
-                                  widthFactor: _laserProgress.value,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        colors: [
-                                          accent.withOpacity(0.4),
-                                          accent,
-                                          Colors.white,
-                                        ],
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: accent.withOpacity(0.8),
-                                          blurRadius: 8,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  // Minimal Version Footnote
-                  Text(
-                    "v1.0.0 • Seanime Tenji Edition",
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.3),
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                ],
               ),
             ),
           ),

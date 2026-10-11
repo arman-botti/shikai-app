@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/services/anilist_service.dart';
@@ -19,12 +18,13 @@ import 'package:shikai_app/services/anime_aggregator_service.dart';
 import 'package:shikai_app/services/update_service.dart';
 import 'package:shikai_app/widgets/update_dialog.dart';
 import 'package:shikai_app/screens/splash_screen.dart';
+import 'package:shikai_app/services/app_preload_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Configure in-memory image cache limits to prevent memory bloat and GC stutter
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 80 * 1024 * 1024; // 80 MB max
-  PaintingBinding.instance.imageCache.maximumSize = 120; // 120 image objects
+  // Configure in-memory image cache limits for high-speed scrolling
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 160 * 1024 * 1024; // 160 MB max
+  PaintingBinding.instance.imageCache.maximumSize = 500; // 500 downsampled image textures
   // Initialize user theme preference
   await ThemeService.init();
   // Initialize native in-app client-side proxy (0% Oracle VM bandwidth)
@@ -96,6 +96,7 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
 
   final PageController _spotlightController = PageController();
   int _spotlightIndex = 0;
+  final ValueNotifier<int> _spotlightIndexNotifier = ValueNotifier<int>(0);
   Timer? _spotlightTimer;
 
   final List<String> _genres = [
@@ -121,8 +122,30 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
   void initState() {
     super.initState();
     _homeScrollController.addListener(_onHomeScroll);
-    _loadAnilistData();
-    _loadContinueWatching();
+    AppPreloadService.addListener(_onPreloadSecondaryUpdate);
+
+    if (AppPreloadService.isPreloaded && AppPreloadService.trending.isNotEmpty) {
+      // 1. INSTANTLY HYDRATE FROM PRELOAD CACHE (Zero Delay, Zero Blank Skeletons!)
+      _trending = AppPreloadService.trending;
+      _popular = AppPreloadService.popular;
+      _spotlightList = AppPreloadService.spotlightList;
+      _continueWatching = AppPreloadService.continueWatching;
+      _infiniteFeed = List.from(AppPreloadService.popular);
+      _topAiring = AppPreloadService.topAiring;
+      _movies = AppPreloadService.movies;
+      _recentlyUpdated = AppPreloadService.recentlyUpdated;
+      _topRated = AppPreloadService.topRated;
+      _upcoming = AppPreloadService.upcoming;
+      _trendingManga = AppPreloadService.trendingManga;
+      _actionHits = AppPreloadService.actionHits;
+      _fantasyHits = AppPreloadService.fantasyHits;
+      _romanceHits = AppPreloadService.romanceHits;
+      _isLoading = false;
+      _startSpotlightTimer();
+    } else {
+      _loadAnilistData();
+      _loadContinueWatching();
+    }
 
     // In-App Update Check: silently checks GitHub Releases after 2.5s
     Future.delayed(const Duration(milliseconds: 2500), () {
@@ -135,10 +158,45 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     });
   }
 
+  void _onPreloadSecondaryUpdate() {
+    if (!mounted) return;
+    setState(() {
+      if (AppPreloadService.topAiring.isNotEmpty && _topAiring.isEmpty) {
+        _topAiring = AppPreloadService.topAiring;
+      }
+      if (AppPreloadService.movies.isNotEmpty && _movies.isEmpty) {
+        _movies = AppPreloadService.movies;
+      }
+      if (AppPreloadService.recentlyUpdated.isNotEmpty && _recentlyUpdated.isEmpty) {
+        _recentlyUpdated = AppPreloadService.recentlyUpdated;
+      }
+      if (AppPreloadService.topRated.isNotEmpty && _topRated.isEmpty) {
+        _topRated = AppPreloadService.topRated;
+      }
+      if (AppPreloadService.upcoming.isNotEmpty && _upcoming.isEmpty) {
+        _upcoming = AppPreloadService.upcoming;
+      }
+      if (AppPreloadService.trendingManga.isNotEmpty && _trendingManga.isEmpty) {
+        _trendingManga = AppPreloadService.trendingManga;
+      }
+      if (AppPreloadService.actionHits.isNotEmpty && _actionHits.isEmpty) {
+        _actionHits = AppPreloadService.actionHits;
+      }
+      if (AppPreloadService.fantasyHits.isNotEmpty && _fantasyHits.isEmpty) {
+        _fantasyHits = AppPreloadService.fantasyHits;
+      }
+      if (AppPreloadService.romanceHits.isNotEmpty && _romanceHits.isEmpty) {
+        _romanceHits = AppPreloadService.romanceHits;
+      }
+    });
+  }
+
   @override
   void dispose() {
+    AppPreloadService.removeListener(_onPreloadSecondaryUpdate);
     _spotlightTimer?.cancel();
     _spotlightController.dispose();
+    _spotlightIndexNotifier.dispose();
     _homeScrollController.removeListener(_onHomeScroll);
     _homeScrollController.dispose();
     super.dispose();
@@ -192,7 +250,8 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
   void _startSpotlightTimer() {
     _spotlightTimer?.cancel();
     _spotlightTimer = Timer.periodic(const Duration(milliseconds: 5500), (timer) {
-      if (_spotlightList.isNotEmpty && _spotlightController.hasClients) {
+      final isVisible = _homeScrollController.hasClients && _homeScrollController.offset < 360;
+      if (_spotlightList.isNotEmpty && _spotlightController.hasClients && isVisible) {
         final next = (_spotlightIndex + 1) % _spotlightList.length;
         _spotlightController.animateToPage(
           next,
@@ -310,18 +369,28 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     _loadContinueWatching();
   }
 
-  void _openSchedule() {
-    Navigator.push(
+  void _openSchedule() async {
+    _spotlightTimer?.cancel();
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const ScheduleScreen()),
     );
+    if (mounted) {
+      setState(() => _currentIndex = 0);
+      _startSpotlightTimer();
+    }
   }
 
-  void _openManga() {
-    Navigator.push(
+  void _openManga() async {
+    _spotlightTimer?.cancel();
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const MangaScreen()),
     );
+    if (mounted) {
+      setState(() => _currentIndex = 0);
+      _startSpotlightTimer();
+    }
   }
 
   void _openMangaDetail(AnilistMedia manga) {
@@ -331,20 +400,30 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     );
   }
 
-  void _openLibrary() {
-    Navigator.push(
+  void _openLibrary() async {
+    _spotlightTimer?.cancel();
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const LibraryScreen()),
     );
+    if (mounted) {
+      setState(() => _currentIndex = 0);
+      _startSpotlightTimer();
+    }
   }
 
-  void _openDiscover({String? genre, String? format}) {
-    Navigator.push(
+  void _openDiscover({String? genre, String? format}) async {
+    _spotlightTimer?.cancel();
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => DiscoverScreen(initialGenre: genre, initialFormat: format),
       ),
     );
+    if (mounted) {
+      setState(() => _currentIndex = 0);
+      _startSpotlightTimer();
+    }
   }
 
   void _pickRandomAnime() async {
@@ -475,32 +554,6 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                   ),
                   child: IconButton(
                     padding: EdgeInsets.zero,
-                    tooltip: "Theme (${ThemeService.themeLabel})",
-                    icon: const Icon(Icons.palette_outlined, color: Colors.white, size: 19),
-                    onPressed: () {
-                      ThemeService.cycleTheme();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text("Theme: ${ThemeService.themeLabel}"),
-                          duration: const Duration(seconds: 1),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              Center(
-                child: Container(
-                  width: 38,
-                  height: 38,
-                  margin: const EdgeInsets.only(right: 6),
-                  decoration: BoxDecoration(
-                    color: ThemeService.surface,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: ThemeService.border),
-                  ),
-                  child: IconButton(
-                    padding: EdgeInsets.zero,
                     tooltip: "Surprise Me (Random Anime 🎲)",
                     icon: const Icon(Icons.casino_outlined, color: Colors.white, size: 19),
                     onPressed: _pickRandomAnime,
@@ -537,12 +590,11 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                     await _loadAnilistData();
                     await _loadContinueWatching();
                   },
-                  child: SingleChildScrollView(
+                  child: ListView(
                     controller: _homeScrollController,
+                    cacheExtent: 500,
                     physics: const AlwaysScrollableScrollPhysics(),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                    children: [
                         // 1. DYNAMIC AUTO-PLAYING HERO SPOTLIGHT CAROUSEL
                         if (_spotlightList.isNotEmpty)
                           _buildHeroCarousel(_spotlightList, accent)
@@ -670,40 +722,35 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                       ],
                     ),
                   ),
-                ),
 
-          // SEANIME GLASSMORPHISM BOTTOM NAVIGATION BAR
-          bottomNavigationBar: ClipRRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 20.0, sigmaY: 20.0),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: ThemeService.background.withOpacity(0.92),
-                  border: const Border(
-                    top: BorderSide(color: ThemeService.border, width: 1),
-                  ),
-                ),
-                child: BottomNavigationBar(
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  type: BottomNavigationBarType.fixed,
-                  selectedItemColor: accent,
-                  unselectedItemColor: ThemeService.textDarkMuted,
-                  selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
-                  unselectedLabelStyle: const TextStyle(fontSize: 11),
-                  currentIndex: _currentIndex,
-                  onTap: (index) {
-                    setState(() => _currentIndex = index);
-                    if (index == 1) {
-                      _openDiscover();
-                    } else if (index == 2) {
-                      _openManga();
-                    } else if (index == 3) {
-                      _openSchedule();
-                    } else if (index == 4) {
-                      _openLibrary();
-                    }
-                  },
+          // SEANIME HIGH-PERFORMANCE BOTTOM NAVIGATION BAR (GPU Optimized)
+          bottomNavigationBar: Container(
+            decoration: const BoxDecoration(
+              color: ThemeService.surface,
+              border: Border(
+                top: BorderSide(color: ThemeService.border, width: 1),
+              ),
+            ),
+            child: BottomNavigationBar(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              type: BottomNavigationBarType.fixed,
+              selectedItemColor: accent,
+              unselectedItemColor: ThemeService.textDarkMuted,
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+              unselectedLabelStyle: const TextStyle(fontSize: 11),
+              currentIndex: _currentIndex,
+              onTap: (index) {
+                if (index == 1) {
+                  _openDiscover();
+                } else if (index == 2) {
+                  _openManga();
+                } else if (index == 3) {
+                  _openSchedule();
+                } else if (index == 4) {
+                  _openLibrary();
+                }
+              },
                   items: const [
                     BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "Home"),
                     BottomNavigationBarItem(icon: Icon(Icons.movie_filter_outlined), activeIcon: Icon(Icons.movie_filter), label: "Anime"),
@@ -713,8 +760,6 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                   ],
                 ),
               ),
-            ),
-          ),
         );
       },
     );
@@ -1172,21 +1217,6 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
               _openCatalog("My Watchlist", "watchlist");
             },
           ),
-          ListTile(
-            leading: Icon(Icons.palette_outlined, color: accent),
-            title: const Text("Switch Theme (Bankai Palette)", style: TextStyle(color: Colors.white)),
-            subtitle: Text(ThemeService.themeLabel, style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold)),
-            onTap: () {
-              ThemeService.cycleTheme();
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text("Theme switched to: ${ThemeService.themeLabel}"),
-                  duration: const Duration(seconds: 1),
-                ),
-              );
-            },
-          ),
 
           const Divider(color: ThemeService.border),
 
@@ -1432,18 +1462,18 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
       return const SizedBox(height: 100);
     }
 
-    return SizedBox(
-      height: 350,
-      child: Stack(
-        alignment: Alignment.bottomCenter,
-        children: [
+    return RepaintBoundary(
+      child: SizedBox(
+        height: 350,
+        child: Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
           PageView.builder(
             controller: _spotlightController,
             itemCount: items.length,
             onPageChanged: (idx) {
-              setState(() {
-                _spotlightIndex = idx;
-              });
+              _spotlightIndex = idx;
+              _spotlightIndexNotifier.value = idx;
             },
             itemBuilder: (context, idx) {
               final media = items[idx];
@@ -1626,36 +1656,42 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
           Positioned(
             bottom: 8,
             right: 16,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(items.length, (i) {
-                final isSelected = i == _spotlightIndex;
-                return GestureDetector(
-                  onTap: () {
-                    _spotlightController.animateToPage(
-                      i,
-                      duration: const Duration(milliseconds: 350),
-                      curve: Curves.easeInOut,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _spotlightIndexNotifier,
+              builder: (context, activeIndex, _) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(items.length, (i) {
+                    final isSelected = i == activeIndex;
+                    return GestureDetector(
+                      onTap: () {
+                        _spotlightController.animateToPage(
+                          i,
+                          duration: const Duration(milliseconds: 350),
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 250),
+                        margin: const EdgeInsets.symmetric(horizontal: 2.5),
+                        width: isSelected ? 22 : 6,
+                        height: 3.5,
+                        decoration: BoxDecoration(
+                          color: isSelected ? accent : Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
                     );
-                  },
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    margin: const EdgeInsets.symmetric(horizontal: 2.5),
-                    width: isSelected ? 22 : 6,
-                    height: 3.5,
-                    decoration: BoxDecoration(
-                      color: isSelected ? accent : Colors.white24,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
+                  }),
                 );
-              }),
+              },
             ),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   // --------------------------------------------------------------------------
   // HORIZONTAL SECTION WITH SEANIME TENJI MEDIA CARDS
@@ -1671,9 +1707,10 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     final posterHeight = isSmall ? 170.0 : 205.0;
     final totalHeight = isSmall ? 225.0 : 265.0;
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 22.0),
-      child: Column(
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.only(top: 22.0),
+        child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
@@ -1709,14 +1746,18 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
             height: totalHeight,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              itemExtent: cardWidth + 8.0,
+              cacheExtent: 300,
               padding: const EdgeInsets.symmetric(horizontal: 12.0),
               itemCount: list.length,
               itemBuilder: (context, index) {
                 final item = list[index];
-                return GestureDetector(
-                  onTap: () => _openDetail(item),
-                  child: Container(
-                    width: cardWidth,
+                return RepaintBoundary(
+                  child: GestureDetector(
+                    onTap: () => _openDetail(item),
+                    child: Container(
+                      width: cardWidth,
                     margin: const EdgeInsets.symmetric(horizontal: 4.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1832,14 +1873,16 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                       ],
                     ),
                   ),
-                );
+                ),
+              );
               },
             ),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   // --------------------------------------------------------------------------
   // TRENDING MANGA SECTION
@@ -1847,96 +1890,100 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
   Widget _buildMangaHorizontalSection(Color accent) {
     if (_trendingManga.isEmpty) return const SizedBox.shrink();
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 22.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "Trending Manga & Webtoons 📖",
-                  style: TextStyle(color: Colors.white, fontSize: 17.5, fontWeight: FontWeight.bold),
-                ),
-                InkWell(
-                  onTap: _openManga,
-                  borderRadius: BorderRadius.circular(6),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    child: Text(
-                      "Explore Manga ›",
-                      style: TextStyle(
-                        color: accent,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.only(top: 22.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    "Trending Manga & Webtoons 📖",
+                    style: TextStyle(color: Colors.white, fontSize: 17.5, fontWeight: FontWeight.bold),
+                  ),
+                  InkWell(
+                    onTap: _openManga,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      child: Text(
+                        "Explore Manga ›",
+                        style: TextStyle(
+                          color: accent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 255,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12.0),
-              itemCount: _trendingManga.length,
-              itemBuilder: (context, index) {
-                final item = _trendingManga[index];
-                return GestureDetector(
-                  onTap: () => _openMangaDetail(item),
-                  child: Container(
-                    width: 140,
-                    margin: const EdgeInsets.symmetric(horizontal: 4.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: Container(
-                            height: 195,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: ThemeService.border),
-                            ),
-                            child: ShikaiNetworkImage(
-                              imageUrl: item.coverImage,
-                              placeholderTitle: item.displayTitle,
-                              fit: BoxFit.cover,
-                              width: 140,
-                              isManga: true,
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 270,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemExtent: 148.0,
+                padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                itemCount: _trendingManga.length,
+                itemBuilder: (context, index) {
+                  final item = _trendingManga[index];
+                  return GestureDetector(
+                    onTap: () => _openMangaDetail(item),
+                    child: Container(
+                      width: 140,
+                      margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              height: 195,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: ThemeService.border),
+                              ),
+                              child: ShikaiNetworkImage(
+                                imageUrl: item.coverImage,
+                                placeholderTitle: item.displayTitle,
+                                fit: BoxFit.cover,
+                                width: 140,
+                                isManga: true,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          item.displayTitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            height: 1.2,
+                          const SizedBox(height: 6),
+                          Text(
+                            item.displayTitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              height: 1.2,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item.chapters != null ? "${item.chapters} Chs" : "Ongoing",
-                          style: const TextStyle(color: ThemeService.textMuted, fontSize: 10.5),
-                        ),
-                      ],
+                          const SizedBox(height: 2),
+                          Text(
+                            item.chapters != null ? "${item.chapters} Chs" : "Ongoing",
+                            style: const TextStyle(color: ThemeService.textMuted, fontSize: 10.5),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -2065,7 +2112,7 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
               ),
               itemBuilder: (context, index) {
                 final anime = _infiniteFeed[index];
-                return _buildGridAnimeCard(anime, accent);
+                return RepaintBoundary(child: _buildGridAnimeCard(anime, accent));
               },
             ),
           ),
