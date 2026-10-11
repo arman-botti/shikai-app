@@ -1,58 +1,112 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Shikai - Anime Streaming App">
 
   <!-- iOS meta tags & icons -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="my_anime_app">
+  <meta name="apple-mobile-web-app-title" content="shikai_app">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>my_anime_app</title>
+  <title>Shikai Anime</title>
   <link rel="manifest" href="manifest.json">
 
+  <!-- HLS.js for Web Video Playback in Chrome & Firefox -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script>
-    // The value below is injected by flutter build, do not touch.
-    var serviceWorkerVersion = null;
-  </script>
-  <!-- This script adds the flutter initialization JS code -->
-  <script src="flutter.js" defer></script>
-</head>
-<body>
-  <script>
-    window.addEventListener('load', function(ev) {
-      // Download main.dart.js
-      _flutter.loader.loadEntrypoint({
-        serviceWorker: {
-          serviceWorkerVersion: serviceWorkerVersion,
+    (function() {
+      const hlsInstances = new WeakMap();
+
+      // Custom HLS Loader that rewrites relative /api/ endpoints to https://shikai.biz cleanly
+      class ShikaiHlsLoader extends Hls.DefaultConfig.loader {
+        load(context, config, callbacks) {
+          if (context.url.startsWith('/api/')) {
+            context.url = 'https://shikai.biz' + context.url;
+          } else if (context.url.includes('/api/anivexa') || context.url.includes('/api/reanime') || context.url.includes('/api/desidub')) {
+            context.url = context.url.replace(/https?:\/\/[^\/]+(\/api\/)/, 'https://shikai.biz$1');
+          }
+          super.load(context, config, callbacks);
         }
-      }).then(function(engineInitializer) {
-        return engineInitializer.initializeEngine();
-      }).then(function(appRunner) {
-        return appRunner.runApp();
-      });
-    });
+      }
+
+      function setupHlsForElement(video, src) {
+        if (!Hls.isSupported()) {
+          video.src = src;
+          return;
+        }
+
+        let hls = hlsInstances.get(video);
+        if (hls) {
+          hls.destroy();
+        }
+
+        hls = new Hls({
+          debug: false,
+          enableWorker: true,
+          lowLatencyMode: false,
+          loader: ShikaiHlsLoader,
+        });
+
+        hlsInstances.set(video, hls);
+        hls.loadSource(src);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+          console.log('[HLS.js] Manifest parsed successfully, playing video...');
+          video.play().catch(function() {
+            console.log('[HLS.js] Autoplay prevented, awaiting user click.');
+          });
+        });
+
+        hls.on(Hls.Events.ERROR, function(event, data) {
+          if (data.fatal) {
+            console.warn('[HLS.js] Fatal stream error:', data.details);
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                hls.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                hls.recoverMediaError();
+                break;
+              default:
+                hls.destroy();
+                break;
+            }
+          }
+        });
+      }
+
+      // Intercept HTMLMediaElement.prototype.src BEFORE Flutter sets it
+      const originalSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+      if (originalSrcDescriptor && originalSrcDescriptor.set) {
+        Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+          get: function() {
+            return this._shikaiSrc || originalSrcDescriptor.get.call(this);
+          },
+          set: function(val) {
+            this._shikaiSrc = val;
+            if (val && typeof val === 'string' && (val.includes('.m3u8') || val.includes('m3u8'))) {
+              console.log('[HLS.js Interceptor] Hooked HLS stream:', val);
+              setupHlsForElement(this, val);
+              return;
+            }
+            originalSrcDescriptor.set.call(this, val);
+          },
+          configurable: true,
+        });
+      }
+    })();
   </script>
+</head>
+<body style="background-color: #07090E;">
+  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
