@@ -18,6 +18,7 @@ import 'package:shikai_app/widgets/shikai_network_image.dart';
 import 'package:shikai_app/services/anime_aggregator_service.dart';
 import 'package:shikai_app/services/update_service.dart';
 import 'package:shikai_app/widgets/update_dialog.dart';
+import 'package:shikai_app/screens/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -53,7 +54,7 @@ class ShikaiApp extends StatelessWidget {
               surface: ThemeService.surface,
             ),
           ),
-          home: const ShikaiHomeScreen(),
+          home: const SplashScreen(),
         );
       },
     );
