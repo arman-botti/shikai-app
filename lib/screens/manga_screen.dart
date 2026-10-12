@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/services/manga_service.dart';
+import 'package:shikai_app/services/manga_curated_data.dart';
+import 'package:shikai_app/services/app_preload_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/screens/manga_detail_screen.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
@@ -91,6 +93,19 @@ class _MangaScreenState extends State<MangaScreen> {
   @override
   void initState() {
     super.initState();
+    // 0. Instantly hydrate from AppPreloadService or curated fallback for 0ms startup!
+    final initialFallback = AppPreloadService.trendingManga.isNotEmpty
+        ? AppPreloadService.trendingManga
+        : MangaCuratedData.getForCategory(_selectedCategory);
+    if (initialFallback.isNotEmpty) {
+      _categoryTrending[_selectedCategory] = List.from(initialFallback);
+      _categorySpotlight[_selectedCategory] = initialFallback.take(5).toList();
+      _categoryTopRated[_selectedCategory] = initialFallback.reversed.take(18).toList();
+      _categoryInfinite[_selectedCategory] = List.from(initialFallback);
+      _categoryPage[_selectedCategory] = 1;
+      _categoryHasMore[_selectedCategory] = true;
+      _isLoading = false;
+    }
     _loadCategoryData(_selectedCategory);
     _scrollController.addListener(_onScroll);
   }
@@ -125,29 +140,58 @@ class _MangaScreenState extends State<MangaScreen> {
   Future<void> _loadCategoryData(String category, {bool forceRefresh = false}) async {
     final int currentRequestId = ++_requestId;
 
-    // 1. If already cached and not forcing refresh, display instantly with 0ms delay!
+    // 1. If already cached and not forcing refresh, display instantly!
     if (!forceRefresh && _categoryInfinite[category] != null && _categoryInfinite[category]!.isNotEmpty) {
-      setState(() {
-        _isLoading = false;
-        _isLoadingMore = false;
-      });
+      if (_isLoading) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      }
       return;
     }
 
-    setState(() => _isLoading = true);
+    if (_categoryInfinite[category] == null || _categoryInfinite[category]!.isEmpty) {
+      setState(() => _isLoading = true);
+    }
 
     try {
-      final results = await Future.wait([
-        MangaService.getTrendingManga(category: category, perPage: 18),
-        MangaService.getTopRatedManga(category: category, perPage: 18),
-        MangaService.getPopularManga(category: category, page: 1, perPage: 24),
-      ]);
+      final tFuture = MangaService.getTrendingManga(category: category, perPage: 18)
+          .catchError((_) => <AnilistMedia>[]);
+      final trFuture = MangaService.getTopRatedManga(category: category, perPage: 18)
+          .catchError((_) => <AnilistMedia>[]);
+      final popFuture = MangaService.getPopularManga(category: category, page: 1, perPage: 24)
+          .catchError((_) => <AnilistMedia>[]);
+
+      final results = await Future.wait([tFuture, trFuture, popFuture]);
 
       if (!mounted || currentRequestId != _requestId) return;
 
-      final trending = results[0];
-      final topRated = results[1];
-      final infinite = results[2];
+      var trending = results[0];
+      var topRated = results[1];
+      var infinite = results[2];
+
+      // Cross-fallback if any individual shelf is empty
+      if (trending.isEmpty && infinite.isNotEmpty) {
+        trending = infinite.take(18).toList();
+      }
+      if (topRated.isEmpty && infinite.isNotEmpty) {
+        topRated = infinite.reversed.take(18).toList();
+      }
+      if (infinite.isEmpty && trending.isNotEmpty) {
+        infinite = List.from(trending);
+      }
+      if (infinite.isEmpty && topRated.isNotEmpty) {
+        infinite = List.from(topRated);
+      }
+
+      // If still empty (e.g. offline or server rate limit), use curated fallback
+      if (infinite.isEmpty && trending.isEmpty) {
+        final fallback = MangaCuratedData.getForCategory(category);
+        trending = fallback.take(12).toList();
+        topRated = fallback.reversed.take(12).toList();
+        infinite = List.from(fallback);
+      }
 
       setState(() {
         _categoryTrending[category] = trending;
@@ -155,13 +199,30 @@ class _MangaScreenState extends State<MangaScreen> {
         _categoryTopRated[category] = topRated;
         _categoryInfinite[category] = infinite;
         _categoryPage[category] = 1;
-        _categoryHasMore[category] = infinite.length >= 24;
+        _categoryHasMore[category] = infinite.length >= 10;
         _isLoading = false;
         _isLoadingMore = false;
       });
     } catch (_) {
       if (!mounted || currentRequestId != _requestId) return;
-      setState(() => _isLoading = false);
+      if (_categoryInfinite[category] == null || _categoryInfinite[category]!.isEmpty) {
+        final fallback = MangaCuratedData.getForCategory(category);
+        setState(() {
+          _categoryTrending[category] = fallback.take(12).toList();
+          _categorySpotlight[category] = fallback.take(5).toList();
+          _categoryTopRated[category] = fallback.reversed.take(12).toList();
+          _categoryInfinite[category] = List.from(fallback);
+          _categoryPage[category] = 1;
+          _categoryHasMore[category] = true;
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      } else {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      }
     }
   }
 
@@ -189,9 +250,9 @@ class _MangaScreenState extends State<MangaScreen> {
           current.addAll(uniqueNew);
           _categoryInfinite[cat] = current;
           _categoryPage[cat] = nextPage;
-        }
-        if (more.length < 24) {
-          _categoryHasMore[cat] = false;
+          if (more.length < 15) {
+            _categoryHasMore[cat] = false;
+          }
         }
         _isLoadingMore = false;
       });
@@ -528,13 +589,26 @@ class _MangaScreenState extends State<MangaScreen> {
 
             // 3. Body: Search / Genre Infinite Grid or Home Category Infinite Feed
             Expanded(
-              child: _isLoading
-                  ? const Center(child: SharinganLoader(size: 52, showLabel: false))
-                  : _searchQuery.isNotEmpty
-                      ? _buildSearchGrid(accent)
-                      : _selectedGenre != 'All'
-                          ? _buildGenreGrid(accent)
-                          : _buildCategoryInfiniteView(accent),
+              child: RefreshIndicator(
+                color: accent,
+                backgroundColor: ThemeService.surface,
+                onRefresh: () async {
+                  if (_searchQuery.isNotEmpty) {
+                    await _executeSearch(_searchQuery);
+                  } else if (_selectedGenre != 'All') {
+                    await _loadGenreData(_selectedGenre);
+                  } else {
+                    await _loadCategoryData(_selectedCategory, forceRefresh: true);
+                  }
+                },
+                child: _isLoading
+                    ? const Center(child: SharinganLoader(size: 52, showLabel: false))
+                    : _searchQuery.isNotEmpty
+                        ? _buildSearchGrid(accent)
+                        : _selectedGenre != 'All'
+                            ? _buildGenreGrid(accent)
+                            : _buildCategoryInfiniteView(accent),
+              ),
             ),
           ],
         ),
@@ -830,6 +904,51 @@ class _MangaScreenState extends State<MangaScreen> {
               delegate: SliverChildBuilderDelegate(
                 (context, index) => _buildMangaCard(infinite[index]),
                 childCount: infinite.length,
+              ),
+            ),
+          )
+        else if (!_isLoading)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: accent.withOpacity(0.12),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: accent.withOpacity(0.35)),
+                      ),
+                      child: Icon(Icons.auto_stories_rounded, color: accent, size: 36),
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      "No ${cat != 'All' ? cat : 'manga'} titles loaded",
+                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      "Network request delayed or rate-limited. Tap below to reload the catalog.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: ThemeService.textMuted, fontSize: 12.5),
+                    ),
+                    const SizedBox(height: 18),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: () => _loadCategoryData(cat, forceRefresh: true),
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text("Reload Catalog", style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

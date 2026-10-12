@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/models/manga_chapter.dart';
+import 'package:shikai_app/services/manga_curated_data.dart';
 
 class MangaSourceInfo {
   final String id;
@@ -186,6 +187,13 @@ class MangaService {
   static const String comickApiBaseUrl = 'https://comick-source-api.notaspider.dev';
   static const String _anilistEndpoint = 'https://graphql.anilist.co';
   static const String _mangadexBase = 'https://api.mangadex.org';
+
+  static const Map<String, String> _graphqlHeaders = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  };
 
   static const String _mangaFragment = '''
     id
@@ -414,7 +422,11 @@ class MangaService {
         }
       }
     ''';
-    return _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    final results = await _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    if (results.isEmpty && page == 1) {
+      return MangaCuratedData.getForCategory(category);
+    }
+    return results;
   }
 
   /// Fetch popular all-time manga (with optional category filter: 'All', 'Manga', 'Manhwa', 'Manhua')
@@ -429,7 +441,11 @@ class MangaService {
         }
       }
     ''';
-    return _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    final results = await _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    if (results.isEmpty && page == 1) {
+      return MangaCuratedData.getForCategory(category);
+    }
+    return results;
   }
 
   /// Fetch popular Korean Manhwa / Webtoons (STRICTLY South Korea - KR)
@@ -459,7 +475,17 @@ class MangaService {
         }
       }
     ''';
-    return _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    final results = await _fetchMangaList(query, {'page': page, 'perPage': perPage});
+    if (results.isEmpty && page == 1) {
+      final list = MangaCuratedData.getForCategory(category);
+      return list.reversed.toList();
+    }
+    return results;
+  }
+
+  /// Pre-seeded offline & rate-limit fallback data for zero-delay rendering
+  static List<AnilistMedia> getCuratedFallback(String category) {
+    return MangaCuratedData.getForCategory(category);
   }
 
   /// Filter manga by genre or specialized tag (with optional category filter)
@@ -538,9 +564,9 @@ class MangaService {
     try {
       final res = await http.post(
         Uri.parse(_anilistEndpoint),
-        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({'query': query, 'variables': {'id': anilistId}}),
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 12));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body)['data']['Media'];
@@ -562,9 +588,9 @@ class MangaService {
     try {
       final response = await http.post(
         Uri.parse(_anilistEndpoint),
-        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({'query': query, 'variables': variables}),
-      ).timeout(const Duration(seconds: 9));
+      ).timeout(const Duration(seconds: 14));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -579,13 +605,13 @@ class MangaService {
         }
         return results;
       } else if (response.statusCode == 429) {
-        // Rate limit reached: wait 1.2s and retry
-        await Future.delayed(const Duration(milliseconds: 1200));
+        // Rate limit reached: wait 1.8s and retry with browser headers
+        await Future.delayed(const Duration(milliseconds: 1800));
         final retry = await http.post(
           Uri.parse(_anilistEndpoint),
-          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+          headers: _graphqlHeaders,
           body: jsonEncode({'query': query, 'variables': variables}),
-        ).timeout(const Duration(seconds: 8));
+        ).timeout(const Duration(seconds: 12));
 
         if (retry.statusCode == 200) {
           final data = jsonDecode(retry.body);

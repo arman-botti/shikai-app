@@ -163,29 +163,41 @@ class AppPreloadService {
 
   static void _preloadSecondaryBatches() async {
     try {
-      final allSecondary = await Future.wait([
+      // Batch 1: Primary essentials (Top Airing, Movies, Trending Manga)
+      final batch1 = await Future.wait([
         AnilistService.getTopAiring(page: 1, perPage: 20).catchError((_) => <AnilistMedia>[]),
         AnilistService.getMovies(page: 1, perPage: 16).catchError((_) => <AnilistMedia>[]),
+        MangaService.getTrendingManga(category: 'All', page: 1, perPage: 15).catchError((_) => <AnilistMedia>[]),
+      ]);
+      topAiring = batch1[0];
+      movies = batch1[1];
+      trendingManga = batch1[2];
+      _notifyListeners();
+
+      await Future.delayed(const Duration(milliseconds: 350));
+
+      // Batch 2: Catalog shelves (Recently Updated, Top Rated, Upcoming)
+      final batch2 = await Future.wait([
         AnilistService.getRecentlyUpdated(page: 1, perPage: 20).catchError((_) => <AnilistMedia>[]),
         AnilistService.getTopRated(page: 1, perPage: 20).catchError((_) => <AnilistMedia>[]),
         AnilistService.getUpcomingAnime(page: 1, perPage: 16).catchError((_) => <AnilistMedia>[]),
-        MangaService.getTrendingManga(page: 1, perPage: 15).catchError((_) => <AnilistMedia>[]),
+      ]);
+      recentlyUpdated = batch2[0];
+      topRated = batch2[1];
+      upcoming = batch2[2];
+      _notifyListeners();
+
+      await Future.delayed(const Duration(milliseconds: 350));
+
+      // Batch 3: Genre shelves (Action, Fantasy, Romance)
+      final batch3 = await Future.wait([
         AnilistService.getAnimeByGenre('Action', page: 1, perPage: 16).catchError((_) => <AnilistMedia>[]),
         AnilistService.getAnimeByGenre('Fantasy', page: 1, perPage: 16).catchError((_) => <AnilistMedia>[]),
         AnilistService.getAnimeByGenre('Romance', page: 1, perPage: 16).catchError((_) => <AnilistMedia>[]),
       ]);
-
-      topAiring = allSecondary[0];
-      movies = allSecondary[1];
-      recentlyUpdated = allSecondary[2];
-      topRated = allSecondary[3];
-      upcoming = allSecondary[4];
-      trendingManga = allSecondary[5];
-      actionHits = allSecondary[6];
-      fantasyHits = allSecondary[7];
-      romanceHits = allSecondary[8];
-
-      // Notify home screen exactly ONCE when all secondary catalogs are ready
+      actionHits = batch3[0];
+      fantasyHits = batch3[1];
+      romanceHits = batch3[2];
       _notifyListeners();
     } catch (_) {}
   }

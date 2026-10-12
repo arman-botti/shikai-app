@@ -8,6 +8,13 @@ import 'package:shikai_app/models/media_relation.dart';
 class AnilistService {
   static const String endpoint = 'https://graphql.anilist.co';
 
+  static const Map<String, String> _graphqlHeaders = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  };
+
   static const String _mediaFragment = '''
     id
     title {
@@ -203,12 +210,12 @@ class AnilistService {
     try {
       final response = await http.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({
           'query': query,
           'variables': {'start': start, 'end': end},
         }),
-      );
+      ).timeout(const Duration(seconds: 14));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -294,9 +301,9 @@ class AnilistService {
     try {
       final response = await http.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({'query': query, 'variables': {'id': id}}),
-      );
+      ).timeout(const Duration(seconds: 12));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -305,9 +312,7 @@ class AnilistService {
           return AnilistMedia.fromJson(mediaData);
         }
       }
-    } catch (e) {
-      print('AnilistService getAnimeDetails error: \$e');
-    }
+    } catch (_) {}
     return null;
   }
 
@@ -349,9 +354,9 @@ class AnilistService {
     try {
       final response = await http.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({'query': query, 'variables': {'id': id}}),
-      );
+      ).timeout(const Duration(seconds: 12));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -446,12 +451,12 @@ class AnilistService {
     try {
       final response = await http.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({
           'query': franchiseQuery,
           'variables': {'id': animeId},
         }),
-      );
+      ).timeout(const Duration(seconds: 14));
 
       if (response.statusCode != 200) {
         return const FranchiseData(seasons: [], movies: [], related: [], sourceManga: []);
@@ -781,9 +786,9 @@ class AnilistService {
     try {
       final response = await http.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: _graphqlHeaders,
         body: jsonEncode({'query': query, 'variables': variables}),
-      ).timeout(const Duration(seconds: 9));
+      ).timeout(const Duration(seconds: 14));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -796,13 +801,13 @@ class AnilistService {
           return results;
         }
       } else if (response.statusCode == 429) {
-        // Rate limited: wait 1.2s and retry
-        await Future.delayed(const Duration(milliseconds: 1200));
+        // Rate limited: wait 1.8s and retry with browser headers
+        await Future.delayed(const Duration(milliseconds: 1800));
         final retry = await http.post(
           Uri.parse(endpoint),
-          headers: {'Content-Type': 'application/json'},
+          headers: _graphqlHeaders,
           body: jsonEncode({'query': query, 'variables': variables}),
-        ).timeout(const Duration(seconds: 8));
+        ).timeout(const Duration(seconds: 12));
 
         if (retry.statusCode == 200) {
           final data = jsonDecode(retry.body);
@@ -815,12 +820,8 @@ class AnilistService {
             return results;
           }
         }
-      } else {
-        print('Anilist error: HTTP ${response.statusCode} - ${response.body}');
       }
-    } catch (e) {
-      print('AnilistService error: \$e');
-    }
+    } catch (_) {}
 
     // Fallback to cache if available
     if (_animeQueryCache.containsKey(cacheKey)) {
