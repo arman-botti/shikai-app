@@ -335,12 +335,13 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
             ..clear()
             ..addAll(extractedSegUrls);
 
-          // Eagerly prefetch the first 4 chunks so video starts instantly with zero buffer
-          for (final segUrl in extractedSegUrls.take(4)) {
+          // Eagerly prefetch the first chunk so playback starts instantly with 0ms delay
+          if (extractedSegUrls.isNotEmpty) {
+            final firstSeg = extractedSegUrls.first;
             ClientStreamProxy.prefetchChunk(
-              chunkUrl: segUrl,
+              chunkUrl: firstSeg,
               referer: referer,
-              origin: ClientStreamProxy.getOriginForUrl(segUrl, referer),
+              origin: ClientStreamProxy.getOriginForUrl(firstSeg, referer),
             );
           }
 
@@ -386,23 +387,7 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
         // 0% Oracle Server Bandwidth!
         // ==========================================================
         if (path == '/seg.ts') {
-          // Continuous sliding-window prebuffering:
-          // Whenever ExoPlayer requests chunk i, immediately prefetch chunks i+1, i+2, i+3 into RAM!
-          final currentIndex = _recentSegmentOrder.indexOf(targetUrl);
-          if (currentIndex != -1) {
-            for (int offset = 1; offset <= 3; offset++) {
-              final nextIndex = currentIndex + offset;
-              if (nextIndex < _recentSegmentOrder.length) {
-                final nextSegUrl = _recentSegmentOrder[nextIndex];
-                ClientStreamProxy.prefetchChunk(
-                  chunkUrl: nextSegUrl,
-                  referer: referer,
-                  origin: ClientStreamProxy.getOriginForUrl(nextSegUrl, referer),
-                );
-              }
-            }
-          }
-
+          // Demanded chunk takes top priority for instant delivery to ExoPlayer
           final chunkBytes = await ClientStreamProxy.fetchChunkDirectly(
             chunkUrl: targetUrl,
             referer: referer,
@@ -413,6 +398,19 @@ class LocalStreamingProxyNative implements LocalStreamingProxyInterface {
             request.response.statusCode = HttpStatus.badGateway;
             await request.response.close();
             return;
+          }
+
+          // Smart sequential lookahead (1 chunk ahead):
+          // Now that demanded chunk is retrieved, smoothly prefetch chunk i+1 in the background!
+          // Zero bandwidth competition with the active chunk while keeping RAM buffer continuously warm.
+          final currentIndex = _recentSegmentOrder.indexOf(targetUrl);
+          if (currentIndex != -1 && currentIndex + 1 < _recentSegmentOrder.length) {
+            final nextSegUrl = _recentSegmentOrder[currentIndex + 1];
+            ClientStreamProxy.prefetchChunk(
+              chunkUrl: nextSegUrl,
+              referer: referer,
+              origin: ClientStreamProxy.getOriginForUrl(nextSegUrl, referer),
+            );
           }
 
           request.response.headers.set('Content-Type', 'video/mp2t');

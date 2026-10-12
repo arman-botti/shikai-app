@@ -25,8 +25,8 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  static const String currentVersion = '1.0.10';
-  static const int currentBuildNumber = 11;
+  static const String currentVersion = '1.0.11';
+  static const int currentBuildNumber = 12;
   static const String githubOwner = 'arman-botti';
   static const String githubRepo = 'shikai-app';
   static String get fallbackVersionUrl => '${SecurityVault.shikaiBase}/api/app/version';

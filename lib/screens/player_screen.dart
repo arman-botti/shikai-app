@@ -92,6 +92,9 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
 
   // Playback Settings
   double _playbackSpeed = 1.0;
+  int _lastSavedProgressSec = -1;
+  bool _lastBufferingState = false;
+  bool _lastPlayingState = false;
 
   bool get _isControllerReady => _controller != null && _controller!.value.isInitialized;
 
@@ -383,6 +386,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
     _hasStartedPlayback = false;
+    _lastSavedProgressSec = -1;
 
     setState(() {
       _isLoadingStream = true;
@@ -575,11 +579,12 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       setState(() => _currentCueText = '');
     }
 
-    // Save watch progress periodically
+    // Save watch progress periodically (strictly once every 5 seconds, not 60x/sec)
     if (_controller!.value.isPlaying) {
       final posSec = _controller!.value.position.inSeconds;
       final durSec = _controller!.value.duration.inSeconds;
-      if (posSec > 0 && durSec > 0 && posSec % 5 == 0) {
+      if (posSec > 0 && durSec > 0 && posSec % 5 == 0 && posSec != _lastSavedProgressSec) {
+        _lastSavedProgressSec = posSec;
         WatchHistoryService.saveProgress(
           anilistId: widget.anilistId,
           title: widget.title,
@@ -592,7 +597,20 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       }
     }
 
-    setState(() {});
+    // High performance UI update:
+    // Only rebuild full widget tree if controls are actively visible (for scrubber slider),
+    // or if playback/buffering state changed. When controls are hidden, avoid 60fps Flutter rebuilds!
+    if (_showControls) {
+      setState(() {});
+    } else {
+      final isBuffering = _controller!.value.isBuffering;
+      final isPlaying = _controller!.value.isPlaying;
+      if (isBuffering != _lastBufferingState || isPlaying != _lastPlayingState) {
+        _lastBufferingState = isBuffering;
+        _lastPlayingState = isPlaying;
+        setState(() {});
+      }
+    }
   }
 
   void _initSubtitles() async {
@@ -964,9 +982,11 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   Widget _buildVideoSurface() {
     return Center(
       child: _isControllerReady
-          ? AspectRatio(
-              aspectRatio: _controller!.value.aspectRatio,
-              child: VideoPlayer(_controller!),
+          ? RepaintBoundary(
+              child: AspectRatio(
+                aspectRatio: _controller!.value.aspectRatio,
+                child: VideoPlayer(_controller!),
+              ),
             )
           : Container(color: Colors.black),
     );

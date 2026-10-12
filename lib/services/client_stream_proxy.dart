@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'package:shikai_app/services/security_vault.dart';
 
@@ -29,8 +30,8 @@ class ClientStreamProxy {
 
   // In-memory chunk cache for instant 0ms startup & buffer delivery
   static final Map<String, Uint8List> _chunkCache = {};
-  static final Set<String> _pendingPrefetches = {};
-  static const int _maxCacheEntries = 48;
+  static final Map<String, Future<Uint8List?>> _inFlightFetches = {};
+  static const int _maxCacheEntries = 12;
 
   static void cacheChunk(String url, Uint8List data) {
     if (_chunkCache.length >= _maxCacheEntries) {
@@ -49,20 +50,17 @@ class ClientStreamProxy {
     required String referer,
     String? origin,
   }) {
-    if (_chunkCache.containsKey(chunkUrl) || _pendingPrefetches.contains(chunkUrl)) {
+    if (_chunkCache.containsKey(chunkUrl) || _inFlightFetches.containsKey(chunkUrl)) {
       return;
     }
-    _pendingPrefetches.add(chunkUrl);
-    fetchChunkDirectly(chunkUrl: chunkUrl, referer: referer, origin: origin).whenComplete(() {
-      _pendingPrefetches.remove(chunkUrl);
-    });
+    fetchChunkDirectly(chunkUrl: chunkUrl, referer: referer, origin: origin);
   }
 
   // Cryptographically masked XOR cipher key resolved in RAM
   static Uint8List get flixXorKey => SecurityVault.getFlixXorKey();
 
   /// Port of unwrapFlixImageSegment from streamServer.js
-  /// Unwraps WebP/PNG image headers and removes XOR cipher in device RAM.
+  /// Unwraps WebP/PNG image headers and removes XOR cipher in-place.
   static Uint8List unwrapFlixImageSegment(Uint8List body) {
     int offset = 0;
     bool needsXor = false;
@@ -99,19 +97,19 @@ class ClientStreamProxy {
 
     if (offset == 0) return body;
 
-    final out = Uint8List.fromList(body.sublist(offset));
     if (needsXor) {
-      for (int i = 0; i < out.length; i++) {
-        out[i] ^= flixXorKey[i % flixXorKey.length];
+      final key = flixXorKey;
+      final keyLen = key.length;
+      for (int i = offset; i < body.length; i++) {
+        body[i] ^= key[(i - offset) % keyLen];
       }
     }
 
-    return out;
+    return Uint8List.sublistView(body, offset);
   }
 
   /// Downloads a video chunk (.ts) DIRECTLY on the client device
-  /// with native Referer and Origin header spoofing and warm socket pooling.
-  /// Completely bypasses the Oracle VM!
+  /// with singleflight deduplication, isolate XOR decryption, and warm sockets.
   static Future<Uint8List?> fetchChunkDirectly({
     required String chunkUrl,
     required String referer,
@@ -122,6 +120,25 @@ class ClientStreamProxy {
       return cached;
     }
 
+    // Singleflight: If already downloading, join the existing Future
+    if (_inFlightFetches.containsKey(chunkUrl)) {
+      return await _inFlightFetches[chunkUrl]!;
+    }
+
+    final future = _doFetchChunk(chunkUrl: chunkUrl, referer: referer, origin: origin);
+    _inFlightFetches[chunkUrl] = future;
+    try {
+      return await future;
+    } finally {
+      _inFlightFetches.remove(chunkUrl);
+    }
+  }
+
+  static Future<Uint8List?> _doFetchChunk({
+    required String chunkUrl,
+    required String referer,
+    String? origin,
+  }) async {
     try {
       final uri = Uri.parse(chunkUrl);
       final derivedOrigin = origin ?? '${uri.scheme}://${uri.host}';
@@ -139,7 +156,7 @@ class ClientStreamProxy {
           builder.add(chunk);
         }
         final rawBytes = builder.takeBytes();
-        final cleanTsBytes = unwrapFlixImageSegment(rawBytes);
+        final cleanTsBytes = await Isolate.run(() => unwrapFlixImageSegment(rawBytes));
         cacheChunk(chunkUrl, cleanTsBytes);
         return cleanTsBytes;
       } else {
