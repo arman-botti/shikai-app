@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/models/anivexa_episode.dart';
-import 'package:shikai_app/models/media_relation.dart';
+import 'package:shikai_app/models/franchise_data.dart';
 import 'package:shikai_app/services/anivexa_service.dart';
 import 'package:shikai_app/services/anilist_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
@@ -37,9 +38,10 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
   List<AnivexaEpisode> _dubEpisodes = [];
   bool _isLoadingEpisodes = true;
 
-  // Franchise & Related Series
-  List<MediaRelation> _relations = [];
-  bool _isLoadingRelations = true;
+  // Franchise Universe & Seasons Engine
+  FranchiseData? _franchiseData;
+  bool _isLoadingFranchise = true;
+  FranchiseCategory _selectedFranchiseCategory = FranchiseCategory.seasons;
 
   @override
   void initState() {
@@ -51,23 +53,25 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
     await Future.wait([
       _loadAnivexaEpisodes(),
       _loadWatchStatus(),
-      _loadRelations(),
+      _loadFranchise(),
     ]);
   }
 
-  Future<void> _loadRelations() async {
+  Future<void> _loadFranchise() async {
     try {
-      final relations = await AnilistService.getAnimeRelations(widget.media.id);
-      // Sort in true chronological watch order (Prequel/S1 -> Sequel/S2 -> Movie -> Spin-off)
-      relations.sort((a, b) => a.watchOrderPriority.compareTo(b.watchOrderPriority));
+      final data = await AnilistService.getAnimeFranchise(widget.media.id);
       if (mounted) {
         setState(() {
-          _relations = relations;
-          _isLoadingRelations = false;
+          _franchiseData = data;
+          _isLoadingFranchise = false;
+          final avail = data.availableCategories;
+          if (avail.isNotEmpty && !avail.contains(_selectedFranchiseCategory)) {
+            _selectedFranchiseCategory = avail.first;
+          }
         });
       }
     } catch (_) {
-      if (mounted) setState(() => _isLoadingRelations = false);
+      if (mounted) setState(() => _isLoadingFranchise = false);
     }
   }
 
@@ -1017,7 +1021,7 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
   }
 
   Widget _buildFranchiseSection(Color accent) {
-    if (_isLoadingRelations) {
+    if (_isLoadingFranchise) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 24.0),
         child: Column(
@@ -1031,11 +1035,11 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                     color: accent.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Icon(Icons.hub_rounded, color: accent, size: 16),
+                  child: Icon(Icons.layers_rounded, color: accent, size: 16),
                 ),
                 const SizedBox(width: 8),
                 const Text(
-                  "Franchise & Related Series",
+                  "Franchise & Seasons",
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 16,
@@ -1052,13 +1056,13 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
             ),
             const SizedBox(height: 12),
             SizedBox(
-              height: 205,
+              height: 215,
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: 3,
                 itemBuilder: (_, __) => Container(
-                  width: 120,
+                  width: 126,
                   margin: const EdgeInsets.only(right: 12),
                   decoration: BoxDecoration(
                     color: ThemeService.surface,
@@ -1073,9 +1077,14 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
       );
     }
 
-    if (_relations.isEmpty) {
+    if (_franchiseData == null || _franchiseData!.isEmpty) {
       return const SizedBox.shrink();
     }
+
+    final categories = _franchiseData!.availableCategories;
+    if (categories.isEmpty) return const SizedBox.shrink();
+
+    final currentCategoryItems = _franchiseData!.itemsForCategory(_selectedFranchiseCategory);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 24.0),
@@ -1091,11 +1100,11 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                   color: accent.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(Icons.hub_rounded, color: accent, size: 16),
+                child: Icon(Icons.layers_rounded, color: accent, size: 16),
               ),
               const SizedBox(width: 8),
               const Text(
-                "Watch Order & Seasons",
+                "Franchise & Seasons",
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 16.5,
@@ -1112,7 +1121,7 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                   border: Border.all(color: ThemeService.border),
                 ),
                 child: Text(
-                  "${_relations.length}",
+                  "${_franchiseData!.totalCount}",
                   style: const TextStyle(
                     color: ThemeService.textMuted,
                     fontSize: 11,
@@ -1122,7 +1131,7 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
               ),
               const Spacer(),
               const Text(
-                "Chronological Order",
+                "Chronological Timeline",
                 style: TextStyle(
                   color: ThemeService.textDarkMuted,
                   fontSize: 11,
@@ -1133,77 +1142,180 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
           ),
           const SizedBox(height: 12),
 
-          // Horizontal Shelf
-          SizedBox(
-            height: 215,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              physics: const BouncingScrollPhysics(),
-              itemCount: _relations.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final rel = _relations[index];
-                return RepaintBoundary(
-                  child: _buildFranchiseCard(context, rel, accent),
-                );
-              },
+          // Category Chips Bar (Seasons / Movies / OVAs / Manga)
+          if (categories.length > 1) ...[
+            SizedBox(
+              height: 34,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemCount: categories.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, idx) {
+                  final cat = categories[idx];
+                  final isSelected = cat == _selectedFranchiseCategory;
+                  final count = _franchiseData!.itemsForCategory(cat).length;
+                  final label = _franchiseData!.categoryLabel(cat);
+
+                  return GestureDetector(
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _selectedFranchiseCategory = cat);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isSelected ? accent.withOpacity(0.18) : ThemeService.surface,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected ? accent : ThemeService.border,
+                          width: isSelected ? 1.4 : 1.0,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            label,
+                            style: TextStyle(
+                              color: isSelected ? Colors.white : ThemeService.textMuted,
+                              fontSize: 11.5,
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: isSelected ? accent.withOpacity(0.3) : Colors.white10,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              "$count",
+                              style: TextStyle(
+                                color: isSelected ? accent : ThemeService.textDarkMuted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
+            const SizedBox(height: 12),
+          ],
+
+          // Horizontal Shelf of Franchise Cards
+          if (currentCategoryItems.isNotEmpty)
+            SizedBox(
+              height: 228,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemCount: currentCategoryItems.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final item = currentCategoryItems[index];
+                  return RepaintBoundary(
+                    child: _buildFranchiseCard(context, item, accent),
+                  );
+                },
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              alignment: Alignment.center,
+              child: const Text(
+                "No entries in this category",
+                style: TextStyle(color: ThemeService.textDarkMuted, fontSize: 12),
+              ),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildFranchiseCard(BuildContext context, MediaRelation rel, Color accent) {
-    final media = rel.media;
+  Widget _buildFranchiseCard(BuildContext context, FranchiseItem item, Color accent) {
+    final isCurrent = item.isCurrent;
 
     return GestureDetector(
       onTap: () {
-        if (rel.isManga) {
+        if (isCurrent) {
+          HapticFeedback.selectionClick();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Already viewing ${item.seasonLabel} (${item.displayTitle})',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+              backgroundColor: const Color(0xFF1F2438),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(milliseconds: 1400),
+            ),
+          );
+          return;
+        }
+
+        if (item.isManga) {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => MangaDetailScreen(manga: media),
+              builder: (_) => MangaDetailScreen(manga: item.rawMedia),
             ),
           );
         } else {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => AnimeDetailScreen(media: media),
+              builder: (_) => AnimeDetailScreen(media: item.rawMedia),
             ),
           );
         }
       },
       child: SizedBox(
-        width: 120,
+        width: 126,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Poster Container with Badges
+            // Poster Container with Glowing Active Border & Badges
             Container(
-              height: 160,
-              width: 120,
+              height: 165,
+              width: 126,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: ThemeService.border),
+                border: Border.all(
+                  color: isCurrent ? accent : ThemeService.border,
+                  width: isCurrent ? 2.0 : 1.0,
+                ),
                 boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.4),
-                    blurRadius: 8,
-                    offset: const Offset(0, 4),
-                  ),
+                  if (isCurrent)
+                    BoxShadow(
+                      color: accent.withOpacity(0.45),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    )
+                  else
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.4),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4),
+                    ),
                 ],
               ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(isCurrent ? 8 : 9),
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
                     ShikaiNetworkImage(
-                      imageUrl: media.coverImage,
-                      placeholderTitle: media.displayTitle,
-                      borderRadius: BorderRadius.circular(9),
+                      imageUrl: item.coverImage,
+                      placeholderTitle: item.displayTitle,
+                      borderRadius: BorderRadius.circular(isCurrent ? 8 : 9),
                     ),
                     // Gradient overlay
                     Container(
@@ -1214,24 +1326,24 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                           colors: [
                             Colors.black.withOpacity(0.65),
                             Colors.transparent,
-                            Colors.black.withOpacity(0.85),
+                            Colors.black.withOpacity(0.9),
                           ],
                           stops: const [0.0, 0.45, 1.0],
                         ),
                       ),
                     ),
-                    // Top-Left Relation Badge with Icon
+                    // Top-Left Smart Season Tag Pill with Icon
                     Positioned(
                       top: 6,
                       left: 6,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
+                        padding: const EdgeInsets.symmetric(horizontal: 5.5, vertical: 2.5),
                         decoration: BoxDecoration(
-                          color: rel.smartTagColor.withOpacity(0.92),
+                          color: item.tagColor.withOpacity(0.92),
                           borderRadius: BorderRadius.circular(4),
                           boxShadow: [
                             BoxShadow(
-                              color: rel.smartTagColor.withOpacity(0.4),
+                              color: item.tagColor.withOpacity(0.4),
                               blurRadius: 4,
                             ),
                           ],
@@ -1239,13 +1351,13 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(rel.tagIcon, size: 9, color: Colors.white),
+                            Icon(item.tagIcon, size: 9, color: Colors.white),
                             const SizedBox(width: 3),
                             Text(
-                              rel.smartDisplayTag,
+                              item.seasonTag,
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 8.5,
+                                fontSize: 9,
                                 fontWeight: FontWeight.w900,
                                 letterSpacing: 0.2,
                               ),
@@ -1254,6 +1366,34 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                         ),
                       ),
                     ),
+                    // Top-Right "ACTIVE" Badge if Current Media
+                    if (isCurrent)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: accent,
+                            borderRadius: BorderRadius.circular(4),
+                            boxShadow: [
+                              BoxShadow(
+                                color: accent.withOpacity(0.6),
+                                blurRadius: 6,
+                              ),
+                            ],
+                          ),
+                          child: const Text(
+                            "ACTIVE",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                        ),
+                      ),
                     // Bottom Metadata Row (Format & Score/Episodes)
                     Positioned(
                       bottom: 5,
@@ -1262,23 +1402,23 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          if (media.format != null)
+                          if (item.format != null)
                             Text(
-                              media.format!,
+                              item.format!,
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 9,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                          if (media.averageScore != null)
+                          if (item.averageScore != null)
                             Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 const Icon(Icons.star, color: Colors.amber, size: 9),
                                 const SizedBox(width: 2),
                                 Text(
-                                  (media.averageScore! / 10).toStringAsFixed(1),
+                                  (item.averageScore! / 10).toStringAsFixed(1),
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 9,
@@ -1287,9 +1427,9 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                 ),
                               ],
                             )
-                          else if (media.episodes != null)
+                          else if (item.episodes != null)
                             Text(
-                              "${media.episodes} Ep",
+                              "${item.episodes} Ep",
                               style: const TextStyle(
                                 color: Colors.white70,
                                 fontSize: 8.5,
@@ -1304,16 +1444,28 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
               ),
             ),
             const SizedBox(height: 6),
-            // Title
+            // Clean Stripped Season Title (e.g. "Season 2", "Entertainment District Arc")
             Text(
-              media.displayTitle,
+              item.shortTitle,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Color(0xFFE4E4E7),
+              style: TextStyle(
+                color: isCurrent ? accent : const Color(0xFFE4E4E7),
                 fontSize: 11.5,
-                fontWeight: FontWeight.w600,
+                fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
                 height: 1.22,
+              ),
+            ),
+            const SizedBox(height: 2),
+            // Release Year & Subtitle Label
+            Text(
+              item.releaseYear != null ? "${item.releaseYear} • ${item.seasonLabel}" : item.seasonLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: ThemeService.textDarkMuted,
+                fontSize: 9.5,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ],
