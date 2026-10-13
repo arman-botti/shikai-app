@@ -8,6 +8,8 @@ import 'package:shikai_app/services/watch_history_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/services/anivexa_service.dart';
 import 'package:shikai_app/services/security_vault.dart';
+import 'package:shikai_app/services/vast_ad_service.dart';
+import 'package:shikai_app/widgets/mid_roll_ad_overlay.dart';
 import 'package:shikai_app/models/anivexa_episode.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -55,6 +57,11 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   String? _errorMessage;
   Timer? _bufferingWatchdog;
   Timer? _initTimeoutTimer;
+
+  // HilltopAds Mid-Roll Video VAST Ad Engine
+  bool _midRollAdTriggered = false;
+  bool _isPlayingMidRollAd = false;
+  VastAdModel? _currentMidRollAd;
 
   // Controls Visibility & Auto-hide
   bool _showControls = true;
@@ -388,6 +395,12 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     _hasStartedPlayback = false;
     _lastSavedProgressSec = -1;
 
+    if (seekToPosition == null) {
+      _midRollAdTriggered = false;
+      _isPlayingMidRollAd = false;
+      _currentMidRollAd = null;
+    }
+
     setState(() {
       _isLoadingStream = true;
       _hasError = false;
@@ -595,6 +608,17 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
           audio: _currentAudioMode,
         );
       }
+
+      // HilltopAds VAST Mid-Roll Trigger:
+      // Appears strictly once per episode when the viewer reaches the midpoint (50% or 10 min)
+      // Only runs on full episodes (duration > 180s)
+      if (!_midRollAdTriggered && !_isPlayingMidRollAd && durSec > 180) {
+        final midRollCueSec = durSec >= 1200 ? 600 : (durSec ~/ 2);
+        if (posSec >= midRollCueSec && posSec < midRollCueSec + 30) {
+          _midRollAdTriggered = true;
+          _triggerMidRollAd();
+        }
+      }
     }
 
     // High performance UI update:
@@ -611,6 +635,34 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
         setState(() {});
       }
     }
+  }
+
+  Future<void> _triggerMidRollAd() async {
+    debugPrint('[Player] 🎬 Mid-Roll Trigger: Fetching HilltopAds VAST ad...');
+    try {
+      final vastAd = await VastAdService.fetchAd();
+      if (vastAd != null && mounted) {
+        _controller?.pause();
+        setState(() {
+          _isPlayingMidRollAd = true;
+          _currentMidRollAd = vastAd;
+          _showControls = false;
+        });
+      } else {
+        debugPrint('[Player] VAST ad unavailable -> continuing anime playback');
+      }
+    } catch (e) {
+      debugPrint('[Player] Error loading mid-roll ad: $e');
+    }
+  }
+
+  void _onMidRollAdFinished() {
+    if (!mounted) return;
+    setState(() {
+      _isPlayingMidRollAd = false;
+      _currentMidRollAd = null;
+    });
+    _controller?.play();
   }
 
   void _initSubtitles() async {
@@ -902,6 +954,15 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                       ),
                     ),
                   ),
+
+                  // HilltopAds Mid-Roll Video VAST Overlay (Active during mid-roll break)
+                  if (_isPlayingMidRollAd && _currentMidRollAd != null)
+                    Positioned.fill(
+                      child: MidRollAdOverlay(
+                        ad: _currentMidRollAd!,
+                        onAdFinished: _onMidRollAdFinished,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -964,6 +1025,16 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
             ),
           ),
         ),
+
+        // HilltopAds Mid-Roll Video VAST Overlay (Active during mid-roll break in fullscreen)
+        if (_isPlayingMidRollAd && _currentMidRollAd != null)
+          Positioned.fill(
+            child: MidRollAdOverlay(
+              ad: _currentMidRollAd!,
+              onAdFinished: _onMidRollAdFinished,
+            ),
+          ),
+
         // Episodes Slide-in Drawer (from right)
         AnimatedPositioned(
           duration: const Duration(milliseconds: 280),
@@ -1404,26 +1475,66 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Scrubber with YouTube-style White Pre-Buffer Track
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              thumbColor: ThemeService.currentAccent,
-              activeTrackColor: ThemeService.currentAccent,
-              secondaryActiveTrackColor: Colors.white.withOpacity(0.65), // Pre-buffer white line
-              inactiveTrackColor: Colors.white24,
-              trackHeight: isPortrait ? 2.8 : 3.2,
-              thumbShape: RoundSliderThumbShape(enabledThumbRadius: isPortrait ? 4.5 : 6),
-              overlayShape: RoundSliderOverlayShape(overlayRadius: isPortrait ? 9 : 12),
-            ),
-            child: Slider(
-              value: posSec,
-              secondaryTrackValue: secondarySec,
-              min: 0.0,
-              max: totalSec,
-              onChanged: (val) {
-                _controller?.seekTo(Duration(seconds: val.round()));
-              },
-            ),
+          // Scrubber with YouTube-style White Pre-Buffer Track & Orange Mid-Roll Cue Dot
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final trackWidth = constraints.maxWidth;
+              const horizontalPadding = 12.0;
+              final effectiveWidth = trackWidth - (horizontalPadding * 2);
+              final midRollSec = totalSec >= 1200 ? 600.0 : (totalSec / 2.0);
+              final midRollRatio = (midRollSec / totalSec).clamp(0.0, 1.0);
+              final dotLeft = horizontalPadding + (effectiveWidth * midRollRatio) - (isPortrait ? 3.5 : 4.0);
+
+              return Stack(
+                alignment: Alignment.centerLeft,
+                children: [
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      thumbColor: ThemeService.currentAccent,
+                      activeTrackColor: ThemeService.currentAccent,
+                      secondaryActiveTrackColor: Colors.white.withOpacity(0.65), // Pre-buffer white line
+                      inactiveTrackColor: Colors.white24,
+                      trackHeight: isPortrait ? 2.8 : 3.2,
+                      thumbShape: RoundSliderThumbShape(enabledThumbRadius: isPortrait ? 4.5 : 6),
+                      overlayShape: RoundSliderOverlayShape(overlayRadius: isPortrait ? 9 : 12),
+                    ),
+                    child: Slider(
+                      value: posSec,
+                      secondaryTrackValue: secondarySec,
+                      min: 0.0,
+                      max: totalSec,
+                      onChanged: (val) {
+                        _controller?.seekTo(Duration(seconds: val.round()));
+                      },
+                    ),
+                  ),
+
+                  // YouTube-Style Orange Ad Cue Marker on the progress line
+                  if (totalSec > 180 && !_midRollAdTriggered)
+                    Positioned(
+                      left: dotLeft,
+                      child: IgnorePointer(
+                        child: Container(
+                          width: isPortrait ? 7.0 : 8.0,
+                          height: isPortrait ? 7.0 : 8.0,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF9800), // High-visibility Amber Orange
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.black87, width: 1.2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFFFF9800).withOpacity(0.85),
+                                blurRadius: 4.5,
+                                spreadRadius: 0.8,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
