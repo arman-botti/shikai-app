@@ -7,18 +7,21 @@ import 'package:shikai_app/services/anivexa_service.dart';
 import 'package:shikai_app/services/stream_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
+import 'package:shikai_app/services/vast_ad_service.dart';
+import 'package:shikai_app/widgets/mid_roll_ad_overlay.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
 
 /// ---------------------------------------------------------------------------
-/// SHIKAI ANIVEXA EMBEDDED PLAYER SCREEN
+/// SHIKAI ANIVEXA EMBEDDED PLAYER SCREEN (v1.0.15)
 /// 
 /// High-Performance Zero-Proxy Embedded Video Player Architecture:
 /// - Official Anivexa / FlixCloud / MegaCloud Embed integration
 /// - Strict Navigation Sandboxing & Built-in Ad/Popup Redirect Neutralizer
+/// - Unified Single Fullscreen Cinema Mode & Seanime Tenji Matte Carbon UI
+/// - Live HilltopAds VAST Video Mid-Roll Ad Engine with 5s skip button
 /// - Dynamic Auto-Skip Opening (?ski=1) & Audio Switching (?a=0 Sub / ?a=1 Dub)
 /// - Multi-Server Failover: Server 1 (HD-2 Ultra) & Server 2 (HD-1 Mirror)
-/// - Seamless Landscape Fullscreen Cinema Mode & Portrait Responsive Layout
-/// - Instant Episode Switcher, Watch History Synchronization, and Seanime Tenji Design
+/// - Instant Episode Switcher, Watch History Synchronization, and Clean Viewport
 /// ---------------------------------------------------------------------------
 class PlayerScreen extends StatefulWidget {
   final int anilistId;
@@ -71,6 +74,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _showOverlayControls = true;
   Timer? _overlayHideTimer;
 
+  // HilltopAds Live VAST Mid-Roll Video Engine
+  bool _midRollAdTriggered = false;
+  bool _isPlayingMidRollAd = false;
+  VastAdModel? _currentMidRollAd;
+  Timer? _midRollAdTimer;
+
   WebViewController? _webViewController;
 
   @override
@@ -91,6 +100,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _overlayHideTimer?.cancel();
+    _midRollAdTimer?.cancel();
     _webViewController?.loadRequest(Uri.parse('about:blank'));
     // Restore normal system orientation and edge-to-edge system chrome
     SystemChrome.setPreferredOrientations([
@@ -162,13 +172,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _injectPlayerStyles() {
+    // Inject viewport settings and CSS to neutralize popups and remove double-tap zoom artifacts
     _webViewController?.runJavaScript('''
       (function() {
         try {
           window.open = function() { return null; };
           window.alert = function() { return null; };
+          
+          let meta = document.querySelector('meta[name="viewport"]');
+          if (!meta) {
+            meta = document.createElement('meta');
+            meta.name = 'viewport';
+            document.head.appendChild(meta);
+          }
+          meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
+
           const style = document.createElement('style');
-          style.innerHTML = 'html, body { background: #000000 !important; margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; } iframe { border: none !important; width: 100% !important; height: 100% !important; }';
+          style.innerHTML = 'html, body { background: #000000 !important; margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; touch-action: manipulation; -webkit-user-select: none; user-select: none; } iframe { border: none !important; width: 100% !important; height: 100% !important; }';
           document.head.appendChild(style);
         } catch(e) {}
       })();
@@ -225,6 +245,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _errorMessage = null;
     });
 
+    // Schedule HilltopAds Live VAST Mid-Roll Video Ad (triggers at ~45 seconds into watching)
+    _midRollAdTimer?.cancel();
+    _midRollAdTriggered = false;
+    _isPlayingMidRollAd = false;
+    _currentMidRollAd = null;
+    _midRollAdTimer = Timer(const Duration(seconds: 45), () {
+      _triggerMidRollAd();
+    });
+
     // Record progress into Watch History immediately so "Continue Watching" updates
     WatchHistoryService.saveProgress(
       anilistId: widget.anilistId,
@@ -273,6 +302,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _triggerMidRollAd() async {
+    if (_midRollAdTriggered || !mounted) return;
+    _midRollAdTriggered = true;
+    try {
+      final ad = await VastAdService.fetchAd();
+      if (ad != null && mounted) {
+        setState(() {
+          _currentMidRollAd = ad;
+          _isPlayingMidRollAd = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('[MidRollAd] Fetch error: $e');
     }
   }
 
@@ -434,7 +479,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ),
 
-              // Top Translucent Header Bar
+              // Hilltop Live VAST Video Mid-Roll Overlay
+              if (_isPlayingMidRollAd && _currentMidRollAd != null)
+                Positioned.fill(
+                  child: MidRollAdOverlay(
+                    ad: _currentMidRollAd!,
+                    onAdFinished: () {
+                      if (mounted) {
+                        setState(() {
+                          _isPlayingMidRollAd = false;
+                          _currentMidRollAd = null;
+                        });
+                      }
+                    },
+                  ),
+                ),
+
+              // Top Translucent Header Bar with Single Clean Fullscreen Button
               Positioned(
                 top: 0,
                 left: 0,
@@ -481,9 +542,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         tooltip: "Reload Stream",
                         onPressed: () => _loadStreamForEpisode(_currentEpisode),
                       ),
+                      // Single, clean Fullscreen button (eliminates duplicate Cinema buttons)
                       IconButton(
-                        icon: const Icon(Icons.fullscreen_rounded, color: Colors.white, size: 24),
-                        tooltip: "Fullscreen",
+                        icon: const Icon(Icons.fullscreen_rounded, color: Colors.white, size: 26),
+                        tooltip: "Cinema Fullscreen",
                         onPressed: _toggleFullscreen,
                       ),
                     ],
@@ -501,39 +563,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Anime Title & Episode Bar
-                Row(
+                // Anime Title & Episode Details Header (Clean & Uncluttered)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: -0.3,
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            "Streaming via Anivexa • Episode $_currentEpisode of $_resolvedTotalEpisodes",
-                            style: const TextStyle(color: ThemeService.textMuted, fontSize: 12),
-                          ),
-                        ],
+                    Text(
+                      widget.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
                       ),
                     ),
-                    _buildCinemaButton(),
+                    const SizedBox(height: 4),
+                    Text(
+                      "Streaming via Anivexa • Episode $_currentEpisode of $_resolvedTotalEpisodes",
+                      style: const TextStyle(color: ThemeService.textMuted, fontSize: 12),
+                    ),
                   ],
                 ),
 
                 const SizedBox(height: 14),
 
-                // Episode Quick Jump Row (Prev / Next)
+                // Episode Quick Jump Row (Prev / Current Ep / Next)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
@@ -558,7 +613,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: ThemeService.currentAccent.withOpacity(0.18),
                           borderRadius: BorderRadius.circular(6),
@@ -807,8 +862,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             ),
 
+          // Hilltop Live VAST Mid-Roll Video Overlay (Landscape)
+          if (_isPlayingMidRollAd && _currentMidRollAd != null)
+            Positioned.fill(
+              child: MidRollAdOverlay(
+                ad: _currentMidRollAd!,
+                onAdFinished: () {
+                  if (mounted) {
+                    setState(() {
+                      _isPlayingMidRollAd = false;
+                      _currentMidRollAd = null;
+                    });
+                  }
+                },
+              ),
+            ),
+
           // Floating Controls Overlay (Visible when tapped, auto-hides after 4s)
-          if (_showOverlayControls)
+          if (_showOverlayControls && !_isPlayingMidRollAd)
             IgnorePointer(
               ignoring: _isLocked,
               child: AnimatedOpacity(
@@ -884,20 +955,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               icon: const Icon(Icons.dns, size: 14),
                               label: Text(_selectedServer.toUpperCase(), style: const TextStyle(fontSize: 12)),
                             ),
-
-                            const SizedBox(width: 8),
-
-                            // Fullscreen Exit
-                            IconButton(
-                              icon: const Icon(Icons.fullscreen_exit_rounded, color: Colors.white, size: 28),
-                              onPressed: _toggleFullscreen,
-                              tooltip: "Exit Fullscreen",
-                            ),
                           ],
                         ),
                       ),
 
-                      // Bottom Bar
+                      // Bottom Bar (Previous / Next / Episode Pill)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                         child: Row(
@@ -945,7 +1007,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
 
           // Floating Screen Lock Button (Bottom Left)
-          if (_showOverlayControls || _isLocked)
+          if ((_showOverlayControls || _isLocked) && !_isPlayingMidRollAd)
             Positioned(
               left: 20,
               bottom: 20,
@@ -980,31 +1042,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // ---------------------------------------------------------------------------
   // 3. UI HELPER WIDGETS
   // ---------------------------------------------------------------------------
-  Widget _buildCinemaButton() {
-    return GestureDetector(
-      onTap: _toggleFullscreen,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: ThemeService.surface,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: ThemeService.border),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.crop_free, color: Colors.white, size: 16),
-            SizedBox(width: 6),
-            Text(
-              "Cinema",
-              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildPill({required String label, required bool isSelected, required VoidCallback onTap}) {
     return Expanded(
       child: GestureDetector(

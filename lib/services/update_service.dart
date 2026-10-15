@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shikai_app/services/security_vault.dart';
 
 class UpdateInfo {
@@ -32,6 +33,33 @@ class UpdateService {
   static String get fallbackVersionUrl => '${SecurityVault.shikaiBase}/api/app/version';
 
   static const MethodChannel _updaterChannel = MethodChannel('biz.shikai.app/updater');
+  static const String _dismissedUpdateKey = 'shikai_dismissed_update_version';
+  static const String _dismissedTimeKey = 'shikai_dismissed_update_time';
+
+  /// Check whether the update dialog should be displayed or if the user recently dismissed it
+  static Future<bool> shouldShowUpdate(String remoteVersion) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final dismissedVer = prefs.getString(_dismissedUpdateKey);
+      final dismissedTime = prefs.getInt(_dismissedTimeKey) ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // Cooldown: Don't show again for 24 hours if dismissed for the same version
+      if (dismissedVer == remoteVersion && (now - dismissedTime) < 24 * 60 * 60 * 1000) {
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  /// Mark an update as dismissed so the user is not nagged repeatedly
+  static Future<void> markUpdateDismissed(String remoteVersion) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_dismissedUpdateKey, remoteVersion);
+      await prefs.setInt(_dismissedTimeKey, DateTime.now().millisecondsSinceEpoch);
+    } catch (_) {}
+  }
 
   /// Compare two semantic version strings (e.g. '1.0.1' vs '1.0.0')
   static bool isVersionNewer(String remote, String current) {

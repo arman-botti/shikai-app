@@ -147,9 +147,12 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     // In-App Update Check: silently checks GitHub Releases after 2.5s
     Future.delayed(const Duration(milliseconds: 2500), () {
       if (!mounted) return;
-      UpdateService.checkForUpdate().then((updateInfo) {
+      UpdateService.checkForUpdate().then((updateInfo) async {
         if (mounted && updateInfo != null && updateInfo.hasUpdate) {
-          UpdateDialog.show(context, updateInfo);
+          final shouldShow = await UpdateService.shouldShowUpdate(updateInfo.latestVersion);
+          if (shouldShow && mounted) {
+            UpdateDialog.show(context, updateInfo);
+          }
         }
       }).catchError((_) {});
     });

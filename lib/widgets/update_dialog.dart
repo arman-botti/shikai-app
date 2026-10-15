@@ -295,7 +295,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                               ),
-                              onPressed: () => Navigator.of(context).pop(),
+                              onPressed: () {
+                                UpdateService.markUpdateDismissed(widget.updateInfo.latestVersion);
+                                Navigator.of(context).pop();
+                              },
                               child: const Text(
                                 "Later",
                                 style: TextStyle(
