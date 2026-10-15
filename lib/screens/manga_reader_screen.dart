@@ -8,6 +8,7 @@ import 'package:shikai_app/services/manga_history_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
 import 'package:shikai_app/widgets/smart_manga_image.dart';
+import 'package:shikai_app/widgets/manga_hilltop_ad.dart';
 
 enum MangaReaderMode { webtoon, horizontal }
 
@@ -39,6 +40,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   MangaReaderMode _readerMode = MangaReaderMode.webtoon;
   int _currentPage = 0;
   bool _showControls = true;
+  bool _showHilltopAd = true;
 
   // Controllers
   late PageController _pageController;
@@ -172,6 +174,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       _isLoadingPages = true;
       _errorMessage = null;
       _pageUrls = [];
+      _showHilltopAd = true;
     });
 
     try {
@@ -346,6 +349,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
                 right: 0,
                 child: _buildBottomBar(),
               ),
+
+              // 5. Floating HilltopAds In-Page Ad Banner (appears when reading manga)
+              if (_showHilltopAd && !_isLoadingPages && _errorMessage == null && _pageUrls.isNotEmpty)
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 250),
+                  left: 0,
+                  right: 0,
+                  bottom: _showControls ? 140 : (MediaQuery.of(context).padding.bottom + 12),
+                  child: MangaHilltopAd(
+                    onDismiss: () {
+                      if (mounted) setState(() => _showHilltopAd = false);
+                    },
+                  ),
+                ),
             ],
           ),
         ),
@@ -709,7 +726,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             "Ready for the next chapter?",
             style: TextStyle(color: Colors.white60, fontSize: 13),
           ),
-          const SizedBox(height: 22),
+          const SizedBox(height: 16),
+          const MangaHilltopAd(),
+          const SizedBox(height: 16),
           if (hasNext) ...[
             // Red "NEXT" label badge
             Container(
