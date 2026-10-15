@@ -245,12 +245,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _errorMessage = null;
     });
 
-    // Schedule HilltopAds Live VAST Mid-Roll Video Ad (triggers at ~45 seconds into watching)
+    // Pre-fetch HilltopAds Live VAST ad so it is ready immediately with zero delay
+    _currentMidRollAd = null;
+    VastAdService.fetchAd().then((ad) {
+      if (mounted && ad != null) {
+        _currentMidRollAd = ad;
+      }
+    });
+
+    // Schedule HilltopAds Live VAST Video Ad (triggers promptly at ~10 seconds into stream)
     _midRollAdTimer?.cancel();
     _midRollAdTriggered = false;
     _isPlayingMidRollAd = false;
-    _currentMidRollAd = null;
-    _midRollAdTimer = Timer(const Duration(seconds: 45), () {
+    _midRollAdTimer = Timer(const Duration(seconds: 10), () {
       _triggerMidRollAd();
     });
 
@@ -309,11 +316,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_midRollAdTriggered || !mounted) return;
     _midRollAdTriggered = true;
     try {
-      final ad = await VastAdService.fetchAd();
+      final ad = _currentMidRollAd ?? await VastAdService.fetchAd();
       if (ad != null && mounted) {
         setState(() {
           _currentMidRollAd = ad;
           _isPlayingMidRollAd = true;
+        });
+      } else {
+        // Automatic retry after 10 seconds if initial fetch timed out or was null
+        Timer(const Duration(seconds: 10), () async {
+          if (!mounted || _isPlayingMidRollAd) return;
+          final retryAd = await VastAdService.fetchAd();
+          if (retryAd != null && mounted) {
+            setState(() {
+              _currentMidRollAd = retryAd;
+              _isPlayingMidRollAd = true;
+            });
+          }
         });
       }
     } catch (e) {

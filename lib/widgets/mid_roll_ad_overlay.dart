@@ -35,11 +35,11 @@ class _MidRollAdOverlayState extends State<MidRollAdOverlay> {
     super.initState();
     _secondsRemaining = widget.ad.skipOffsetSeconds > 0 ? widget.ad.skipOffsetSeconds : 5;
 
-    // Safety watchdog: if ad cannot start within 5s, gracefully skip to resume anime
-    _watchdogTimer = Timer(const Duration(seconds: 5), () {
+    // Safety watchdog: allow up to 15s for mobile network buffering before failing open
+    _watchdogTimer = Timer(const Duration(seconds: 15), () {
       if (!mounted) return;
       if (!_isAdReady) {
-        debugPrint('[MidRollAd] Ad video failed to load in 5s -> failing open');
+        debugPrint('[MidRollAd] Ad video failed to load in 15s -> failing open');
         widget.onAdFinished();
       }
     });

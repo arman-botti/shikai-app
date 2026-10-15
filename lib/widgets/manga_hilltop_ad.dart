@@ -73,10 +73,19 @@ class _MangaHilltopAdState extends State<MangaHilltopAd> {
           },
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
-            if (url.startsWith('https://shikai.biz') || url.startsWith('about:blank')) {
+            // 1. Allow all subframe / iframe requests inside the ad to load completely
+            if (!request.isMainFrame) {
               return NavigationDecision.navigate;
             }
-            // External ad click: open in user default browser to register click conversion
+
+            // 2. Allow base app domain and ad network origin to navigate
+            if (url.startsWith('https://shikai.biz') ||
+                url.startsWith('about:') ||
+                url.contains('quarrelsomebitter.com')) {
+              return NavigationDecision.navigate;
+            }
+
+            // 3. User clicked the ad sponsor link -> open in external browser
             try {
               _updaterChannel.invokeMethod('openUrl', {'url': url});
             } catch (_) {}
@@ -100,7 +109,7 @@ class _MangaHilltopAdState extends State<MangaHilltopAd> {
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      height: 95,
+      height: 110,
       decoration: BoxDecoration(
         color: const Color(0xFF141419).withOpacity(0.96),
         borderRadius: BorderRadius.circular(14),
