@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shikai_app/models/anilist_media.dart';
 import 'package:shikai_app/services/anilist_service.dart';
-import 'package:shikai_app/services/stream_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/screens/anime_detail_screen.dart';
@@ -27,8 +26,6 @@ void main() async {
   PaintingBinding.instance.imageCache.maximumSize = 500; // 500 downsampled image textures
   // Initialize user theme preference
   await ThemeService.init();
-  // Initialize native in-app client-side proxy (0% Oracle VM bandwidth)
-  await StreamService.initLocalProxy();
   runApp(const ShikaiApp());
 }
 

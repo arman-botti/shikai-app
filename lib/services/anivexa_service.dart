@@ -30,6 +30,31 @@ class AnivexaWatchResult {
 }
 
 /// -----------------------------------------------------------------------
+/// ANIVEXA EMBED & WATCH DATA MODEL
+/// -----------------------------------------------------------------------
+class AnivexaWatchData {
+  final bool success;
+  final String? embedUrl;
+  final String? embedUrlHd1;
+  final int? introStart;
+  final int? introEnd;
+  final int? outroStart;
+  final int? outroEnd;
+  final List<SubtitleTrack> subtitles;
+
+  AnivexaWatchData({
+    required this.success,
+    this.embedUrl,
+    this.embedUrlHd1,
+    this.introStart,
+    this.introEnd,
+    this.outroStart,
+    this.outroEnd,
+    this.subtitles = const [],
+  });
+}
+
+/// -----------------------------------------------------------------------
 /// ANIVEXA API CLIENT (walterwhite-69/Anivexa-API)
 /// Official Multi-Provider Aggregator Engine for Shikai
 /// -----------------------------------------------------------------------
@@ -174,6 +199,65 @@ class AnivexaService {
     required int episode,
     String audio = 'sub',
   }) async {
+    return null;
+  }
+
+  /// Fetch official Anivexa Watch & Embed Data
+  static Future<AnivexaWatchData?> getWatchData({
+    required int anilistId,
+    required int episode,
+    String audio = 'sub',
+  }) async {
+    try {
+      final res = await http.get(
+        Uri.parse('${SecurityVault.shikaiBase}${SecurityVault.anivexaWatchPath}$anilistId/$episode?audio=$audio'),
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 6));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data is Map<String, dynamic>) {
+          String? embedUrl = data['embedUrl'] ?? data['embed'];
+          String? embedUrlHd1 = data['embedUrlHd1'];
+
+          final introStart = data['intro']?['start'] ?? data['intro_start'] ?? 0;
+          final introEnd = data['intro']?['end'] ?? data['intro_end'] ?? 0;
+          final outroStart = data['outro']?['start'] ?? data['outro_start'] ?? 0;
+          final outroEnd = data['outro']?['end'] ?? data['outro_end'] ?? 0;
+
+          final List<SubtitleTrack> subs = [];
+          final rawSubs = data['subtitles'] ?? data['streams']?[0]?['subtitles'];
+          if (rawSubs is List) {
+            for (final s in rawSubs) {
+              String subUrl = s['url'] ?? s['file'] ?? '';
+              if (subUrl.isNotEmpty) {
+                if (!subUrl.startsWith('http')) {
+                  subUrl = '${SecurityVault.shikaiBase}${subUrl.startsWith('/') ? '' : '/'}$subUrl';
+                }
+                subs.add(SubtitleTrack(
+                  url: subUrl,
+                  label: s['language'] ?? s['label'] ?? s['lang'] ?? 'English',
+                  language: s['lang'] ?? s['language'] ?? 'en',
+                  flag: s['flag'] ?? '',
+                  isDefault: s['default'] == true,
+                ));
+              }
+            }
+          }
+
+          return AnivexaWatchData(
+            success: data['success'] == true || embedUrl != null,
+            embedUrl: embedUrl,
+            embedUrlHd1: embedUrlHd1,
+            introStart: introStart is num ? introStart.toInt() : 0,
+            introEnd: introEnd is num ? introEnd.toInt() : 0,
+            outroStart: outroStart is num ? outroStart.toInt() : 0,
+            outroEnd: outroEnd is num ? outroEnd.toInt() : 0,
+            subtitles: subs,
+          );
+        }
+      }
+    } catch (_) {}
     return null;
   }
 }
