@@ -786,37 +786,97 @@ class MangaService {
     return _fetchPagesFromMangaDex(chapterId);
   }
 
-  /// High-speed decryptor and image extractor for Mangago chapters
+  /// High-speed decryptor and multi-chunk page extractor for Mangago chapters
   static Future<List<String>> _fetchPagesFromMangago(String chapterUrl) async {
     try {
+      final headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.mangago.zone/',
+      };
+
+      final key = _Aes128Cbc.parseHex("e11adc3949ba59abbe56e057f20f883e");
+      final iv = _Aes128Cbc.parseHex("1234567890abcdef1234567890abcdef");
+
+      List<String>? decryptImgSrcs(String html) {
+        final match = RegExp(r'var imgsrcs\s*=\s*[\x27"]([^\x27"]+)[\x27"]').firstMatch(html);
+        if (match == null) return null;
+        try {
+          final enc = match.group(1)!;
+          final decrypted = _Aes128Cbc.decryptCbc(base64Decode(enc), key, iv);
+          final raw = utf8.decode(decrypted).replaceAll(RegExp(r'\x00+$'), '');
+          return raw.split(',').map((p) => p.trim()).toList();
+        } catch (_) {
+          return null;
+        }
+      }
+
+      String sanitizeUrl(String url) {
+        if (url.contains('iweb_') && url.startsWith('https://')) {
+          return url.replaceFirst('https://', 'http://');
+        }
+        return url;
+      }
+
       final res = await http.get(
         Uri.parse(chapterUrl),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Referer': 'https://www.mangago.zone/',
-        },
+        headers: headers,
       ).timeout(const Duration(seconds: 8));
 
       if (res.statusCode == 200) {
-        final html = res.body;
-        final match = RegExp(r'var imgsrcs\s*=\s*[\x27"]([^\x27"]+)[\x27"]').firstMatch(html);
-        if (match != null) {
-          final enc = match.group(1)!;
-          final key = _Aes128Cbc.parseHex("e11adc3949ba59abbe56e057f20f883e");
-          final iv = _Aes128Cbc.parseHex("1234567890abcdef1234567890abcdef");
-          final decrypted = _Aes128Cbc.decryptCbc(base64Decode(enc), key, iv);
-          final raw = utf8.decode(decrypted).replaceAll(RegExp(r'\x00+$'), '');
+        final initialItems = decryptImgSrcs(res.body);
+        if (initialItems != null && initialItems.isNotEmpty) {
+          final totalCount = initialItems.length;
 
-          final pages = raw.split(',').map((p) => p.trim()).where((p) => p.startsWith('http')).map((p) {
-            // Fix Cloudflare redirect loop on iweb_ servers: use http instead of https
-            if (p.contains('iweb_') && p.startsWith('https://')) {
-              return p.replaceFirst('https://', 'http://');
+          if (totalCount <= 5) {
+            return initialItems
+                .where((p) => p.startsWith('http'))
+                .map(sanitizeUrl)
+                .toList();
+          }
+
+          // Pre-allocated array for the complete chapter pages
+          final allPages = List<String?>.filled(totalCount, null);
+
+          // Populate the initial 5 pages
+          for (int i = 0; i < totalCount && i < 5; i++) {
+            if (initialItems[i].startsWith('http')) {
+              allPages[i] = sanitizeUrl(initialItems[i]);
             }
-            return p;
-          }).toList();
+          }
 
-          if (pages.isNotEmpty) {
-            return pages;
+          // Mangago delivers pages in slices of 5 (pages 6, 11, 16, 21, ...)
+          final cleanBase = chapterUrl.replaceAll(RegExp(r'/+$'), '');
+          final chunkPageNumbers = <int>[
+            for (int p = 6; p <= totalCount; p += 5) p,
+          ];
+
+          if (chunkPageNumbers.isNotEmpty) {
+            await Future.wait(
+              chunkPageNumbers.map((chunkPage) async {
+                try {
+                  final chunkRes = await http.get(
+                    Uri.parse('$cleanBase/$chunkPage/'),
+                    headers: headers,
+                  ).timeout(const Duration(seconds: 8));
+
+                  if (chunkRes.statusCode == 200) {
+                    final chunkItems = decryptImgSrcs(chunkRes.body);
+                    if (chunkItems != null) {
+                      for (int i = 0; i < chunkItems.length && i < totalCount; i++) {
+                        if (chunkItems[i].startsWith('http')) {
+                          allPages[i] = sanitizeUrl(chunkItems[i]);
+                        }
+                      }
+                    }
+                  }
+                } catch (_) {}
+              }),
+            );
+          }
+
+          final finalPages = allPages.whereType<String>().toList();
+          if (finalPages.isNotEmpty) {
+            return finalPages;
           }
         }
       }
@@ -1078,10 +1138,6 @@ class MangaService {
             bestCandidate.clear();
             bestCandidate.addAll(current);
           }
-        }
-
-        if (bestCandidate.length >= 5) {
-          return bestCandidate;
         }
 
         // 2. Comprehensive <img> attribute extraction
