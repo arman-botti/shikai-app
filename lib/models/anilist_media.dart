@@ -17,6 +17,11 @@ class AnilistMedia {
   final String? sourceId;
   final String? sourceName;
 
+  // Next Airing Episode
+  final int? nextAiringEpisode;
+  final int? nextAiringAt;
+  final int? nextAiringTimeUntil;
+
   AnilistMedia({
     required this.id,
     required this.title,
@@ -35,6 +40,9 @@ class AnilistMedia {
     this.sourceUrl,
     this.sourceId,
     this.sourceName,
+    this.nextAiringEpisode,
+    this.nextAiringAt,
+    this.nextAiringTimeUntil,
   });
 
   String get displayTitle {
@@ -57,6 +65,52 @@ class AnilistMedia {
     if (isManhwa) return '🇰🇷';
     if (isManhua) return '🇨🇳';
     return '🇯🇵';
+  }
+
+  // Next Airing Episode Countdown
+  String? get nextAiringCountdown {
+    if (nextAiringAt != null && nextAiringAt! > 0) {
+      return getLiveCountdown();
+    }
+    if (nextAiringTimeUntil == null || nextAiringTimeUntil! <= 0) return null;
+
+    final seconds = nextAiringTimeUntil!;
+    if (seconds < 60) return "Airing in ${seconds}s";
+
+    final minutes = seconds ~/ 60;
+    if (minutes < 60) return "Airing in ${minutes}m";
+
+    final hours = minutes ~/ 60;
+    if (hours < 24) return "Airing in ${hours}h ${minutes % 60}m";
+
+    final days = hours ~/ 24;
+    if (days < 7) return "Airing in ${days}d ${hours % 24}h";
+
+    return "Airing in ${days}d";
+  }
+
+  bool get hasNextAiringEpisode => nextAiringEpisode != null && nextAiringTimeUntil != null && nextAiringTimeUntil! > 0;
+
+  // Live countdown that recalculates based on current time
+  String? getLiveCountdown({DateTime? now}) {
+    if (nextAiringAt == null || nextAiringAt! <= 0) return null;
+
+    final currentTime = (now ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000;
+    final secondsRemaining = nextAiringAt! - currentTime;
+
+    if (secondsRemaining <= 0) return "Airing Now";
+    if (secondsRemaining < 60) return "Airing in ${secondsRemaining}s";
+
+    final minutes = secondsRemaining ~/ 60;
+    if (minutes < 60) return "Airing in ${minutes}m";
+
+    final hours = minutes ~/ 60;
+    if (hours < 24) return "Airing in ${hours}h ${minutes % 60}m";
+
+    final days = hours ~/ 24;
+    if (days < 7) return "Airing in ${days}d ${hours % 24}h";
+
+    return "Airing in ${days}d";
   }
 
   factory AnilistMedia.fromComickSearchResult(
@@ -172,6 +226,17 @@ class AnilistMedia {
       parsedEpisodes = int.tryParse(rawEps);
     }
 
+    // Parse nextAiringEpisode
+    int? nextAiringEp;
+    int? nextAiringAt;
+    int? nextAiringTimeUntil;
+    final nextAir = json['nextAiringEpisode'];
+    if (nextAir is Map) {
+      nextAiringEp = nextAir['episode'] is num ? (nextAir['episode'] as num).toInt() : null;
+      nextAiringAt = nextAir['airingAt'] is num ? (nextAir['airingAt'] as num).toInt() : null;
+      nextAiringTimeUntil = nextAir['timeUntilAiring'] is num ? (nextAir['timeUntilAiring'] as num).toInt() : null;
+    }
+
     return AnilistMedia(
       id: json['id'] is num ? (json['id'] as num).toInt() : (int.tryParse(json['id']?.toString() ?? '0') ?? 0),
       title: romaji,
@@ -190,6 +255,9 @@ class AnilistMedia {
       sourceUrl: json['sourceUrl']?.toString(),
       sourceId: json['sourceId']?.toString(),
       sourceName: json['sourceName']?.toString(),
+      nextAiringEpisode: nextAiringEp,
+      nextAiringAt: nextAiringAt,
+      nextAiringTimeUntil: nextAiringTimeUntil,
     );
   }
 
@@ -212,6 +280,11 @@ class AnilistMedia {
     'format': format,
     'countryOfOrigin': countryOfOrigin,
     'type': type,
+    'nextAiringEpisode': nextAiringEpisode != null ? {
+      'episode': nextAiringEpisode,
+      'airingAt': nextAiringAt,
+      'timeUntilAiring': nextAiringTimeUntil,
+    } : null,
     if (sourceUrl != null) 'sourceUrl': sourceUrl,
     if (sourceId != null) 'sourceId': sourceId,
     if (sourceName != null) 'sourceName': sourceName,

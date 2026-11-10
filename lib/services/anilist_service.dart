@@ -33,6 +33,11 @@ class AnilistService {
     averageScore
     status
     format
+    nextAiringEpisode {
+      airingAt
+      timeUntilAiring
+      episode
+    }
   ''';
 
   static Future<List<AnilistMedia>> getTrendingAnime({int page = 1, int perPage = 12}) async {

@@ -7,8 +7,6 @@ import 'package:shikai_app/services/anivexa_service.dart';
 import 'package:shikai_app/services/stream_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/services/watch_history_service.dart';
-import 'package:shikai_app/services/vast_ad_service.dart';
-import 'package:shikai_app/widgets/mid_roll_ad_overlay.dart';
 import 'package:shikai_app/widgets/sharingan_loader.dart';
 
 /// ---------------------------------------------------------------------------
@@ -18,7 +16,6 @@ import 'package:shikai_app/widgets/sharingan_loader.dart';
 /// - Official Anivexa / FlixCloud / MegaCloud Embed integration
 /// - Strict Navigation Sandboxing & Built-in Ad/Popup Redirect Neutralizer
 /// - Unified Single Fullscreen Cinema Mode & Seanime Tenji Matte Carbon UI
-/// - Live HilltopAds VAST Video Mid-Roll Ad Engine with 5s skip button
 /// - Dynamic Auto-Skip Opening (?ski=1) & Audio Switching (?a=0 Sub / ?a=1 Dub)
 /// - Multi-Server Failover: Server 1 (HD-2 Ultra) & Server 2 (HD-1 Mirror)
 /// - Instant Episode Switcher, Watch History Synchronization, and Clean Viewport
@@ -74,12 +71,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _showOverlayControls = true;
   Timer? _overlayHideTimer;
 
-  // HilltopAds Live VAST Mid-Roll Video Engine
-  bool _midRollAdTriggered = false;
-  bool _isPlayingMidRollAd = false;
-  VastAdModel? _currentMidRollAd;
-  Timer? _midRollAdTimer;
-
   WebViewController? _webViewController;
 
   @override
@@ -100,7 +91,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _overlayHideTimer?.cancel();
-    _midRollAdTimer?.cancel();
     _webViewController?.loadRequest(Uri.parse('about:blank'));
     // Restore normal system orientation and edge-to-edge system chrome
     SystemChrome.setPreferredOrientations([
@@ -245,22 +235,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _errorMessage = null;
     });
 
-    // Pre-fetch HilltopAds Live VAST ad so it is ready immediately with zero delay
-    _currentMidRollAd = null;
-    VastAdService.fetchAd().then((ad) {
-      if (mounted && ad != null) {
-        _currentMidRollAd = ad;
-      }
-    });
-
-    // Schedule HilltopAds Live VAST Video Ad (triggers promptly at ~10 seconds into stream)
-    _midRollAdTimer?.cancel();
-    _midRollAdTriggered = false;
-    _isPlayingMidRollAd = false;
-    _midRollAdTimer = Timer(const Duration(seconds: 10), () {
-      _triggerMidRollAd();
-    });
-
     // Record progress into Watch History immediately so "Continue Watching" updates
     WatchHistoryService.saveProgress(
       anilistId: widget.anilistId,
@@ -309,34 +283,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _isLoading = false;
         });
       }
-    }
-  }
-
-  Future<void> _triggerMidRollAd() async {
-    if (_midRollAdTriggered || !mounted) return;
-    _midRollAdTriggered = true;
-    try {
-      final ad = _currentMidRollAd ?? await VastAdService.fetchAd();
-      if (ad != null && mounted) {
-        setState(() {
-          _currentMidRollAd = ad;
-          _isPlayingMidRollAd = true;
-        });
-      } else {
-        // Automatic retry after 10 seconds if initial fetch timed out or was null
-        Timer(const Duration(seconds: 10), () async {
-          if (!mounted || _isPlayingMidRollAd) return;
-          final retryAd = await VastAdService.fetchAd();
-          if (retryAd != null && mounted) {
-            setState(() {
-              _currentMidRollAd = retryAd;
-              _isPlayingMidRollAd = true;
-            });
-          }
-        });
-      }
-    } catch (e) {
-      debugPrint('[MidRollAd] Fetch error: $e');
     }
   }
 
@@ -495,22 +441,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ],
                       ),
                     ],
-                  ),
-                ),
-
-              // Hilltop Live VAST Video Mid-Roll Overlay
-              if (_isPlayingMidRollAd && _currentMidRollAd != null)
-                Positioned.fill(
-                  child: MidRollAdOverlay(
-                    ad: _currentMidRollAd!,
-                    onAdFinished: () {
-                      if (mounted) {
-                        setState(() {
-                          _isPlayingMidRollAd = false;
-                          _currentMidRollAd = null;
-                        });
-                      }
-                    },
                   ),
                 ),
 
@@ -881,24 +811,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             ),
 
-          // Hilltop Live VAST Mid-Roll Video Overlay (Landscape)
-          if (_isPlayingMidRollAd && _currentMidRollAd != null)
-            Positioned.fill(
-              child: MidRollAdOverlay(
-                ad: _currentMidRollAd!,
-                onAdFinished: () {
-                  if (mounted) {
-                    setState(() {
-                      _isPlayingMidRollAd = false;
-                      _currentMidRollAd = null;
-                    });
-                  }
-                },
-              ),
-            ),
-
           // Floating Controls Overlay (Visible when tapped, auto-hides after 4s)
-          if (_showOverlayControls && !_isPlayingMidRollAd)
+          if (_showOverlayControls)
             IgnorePointer(
               ignoring: _isLocked,
               child: AnimatedOpacity(
@@ -1026,7 +940,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
 
           // Floating Screen Lock Button (Bottom Left)
-          if ((_showOverlayControls || _isLocked) && !_isPlayingMidRollAd)
+          if (_showOverlayControls || _isLocked)
             Positioned(
               left: 20,
               bottom: 20,

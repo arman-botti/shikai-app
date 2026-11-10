@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shikai_app/models/anilist_media.dart';
@@ -43,10 +44,30 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
   bool _isLoadingFranchise = true;
   FranchiseCategory _selectedFranchiseCategory = FranchiseCategory.seasons;
 
+  // Next Airing Episode Live Countdown
+  Timer? _countdownTimer;
+
   @override
   void initState() {
     super.initState();
     _initData();
+    _startCountdownTimer();
+  }
+
+  @override
+  void dispose() {
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startCountdownTimer() {
+    if (widget.media.hasNextAiringEpisode) {
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && widget.media.hasNextAiringEpisode) {
+          setState(() {});
+        }
+      });
+    }
   }
 
   Future<void> _initData() async {
@@ -415,6 +436,15 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                         textColor: accent,
                                         border: accent.withOpacity(0.4),
                                       ),
+                                      if (media.hasNextAiringEpisode)
+                                        _buildPill(
+                                          icon: Icons.schedule,
+                                          iconColor: const Color(0xFF10B981),
+                                          label: media.nextAiringCountdown!,
+                                          color: const Color(0xFF10B981).withOpacity(0.18),
+                                          textColor: const Color(0xFF10B981),
+                                          border: const Color(0xFF10B981).withOpacity(0.4),
+                                        ),
                                     ],
                                   ),
                                 ],
@@ -593,6 +623,32 @@ class _AnimeDetailScreenState extends State<AnimeDetailScreen> {
                                   width: 14,
                                   height: 14,
                                   child: CircularProgressIndicator(color: accent, strokeWidth: 2),
+                                ),
+                              ],
+                              if (media.hasNextAiringEpisode) ...[
+                                const SizedBox(width: 10),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF10B981).withOpacity(0.18),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.schedule, color: Color(0xFF10B981), size: 12),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        "Ep ${media.nextAiringEpisode} ${media.nextAiringCountdown!}",
+                                        style: const TextStyle(
+                                          color: Color(0xFF10B981),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ],
                             ],
