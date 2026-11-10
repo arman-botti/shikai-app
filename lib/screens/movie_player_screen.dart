@@ -19,6 +19,8 @@ class MoviePlayerScreen extends StatefulWidget {
   final String subjectId;
   final int season;
   final int episode;
+  final List<MovieboxSeason>? seasons;
+  final String? detailPath;
 
   const MoviePlayerScreen({
     Key? key,
@@ -28,6 +30,8 @@ class MoviePlayerScreen extends StatefulWidget {
     this.subtitle,
     this.season = 0,
     this.episode = 0,
+    this.seasons,
+    this.detailPath,
   }) : super(key: key);
 
   @override
@@ -38,6 +42,15 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   VideoPlayerController? _controller;
   int _streamIndex = 0;
   int _generation = 0;
+
+  late int _currentSeason;
+  late int _currentEpisode;
+  late int _selectedDrawerSeason;
+  late List<MovieboxStream> _currentStreams;
+  List<MovieboxSeason> _seasons = [];
+  bool _isLoadingSeasons = false;
+  bool _isSwitchingEpisode = false;
+  bool _showEpisodesDrawer = false;
 
   bool _isInitializing = true;
   String? _error;
@@ -63,9 +76,163 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _currentSeason = widget.season;
+    _currentEpisode = widget.episode;
+    _selectedDrawerSeason = widget.season > 0 ? widget.season : 1;
+    _currentStreams = List.from(widget.streams);
+
+    if (widget.seasons != null && widget.seasons!.isNotEmpty) {
+      _seasons = List.from(widget.seasons!);
+      if (!_seasons.any((s) => s.season == _selectedDrawerSeason)) {
+        _selectedDrawerSeason = _seasons.first.season;
+      }
+    } else if (widget.season > 0) {
+      _fetchSeasons();
+    }
+
     _sortStreams();
     _bootstrapSubtitles();
-    _initController(_streams.first);
+    if (_currentStreams.isNotEmpty) {
+      _initController(_currentStreams.first);
+    }
+  }
+
+  Future<void> _fetchSeasons() async {
+    setState(() => _isLoadingSeasons = true);
+    try {
+      final seasons = await MovieboxService.getSeasons(widget.subjectId);
+      if (mounted) {
+        setState(() {
+          _seasons = seasons;
+          _isLoadingSeasons = false;
+          if (seasons.isNotEmpty &&
+              !seasons.any((s) => s.season == _selectedDrawerSeason)) {
+            _selectedDrawerSeason = seasons.first.season;
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingSeasons = false);
+    }
+  }
+
+  bool get _isSeries =>
+      _currentSeason > 0 || _currentEpisode > 0 || _seasons.isNotEmpty;
+
+  bool get _hasPreviousEpisode {
+    if (!_isSeries) return false;
+    if (_currentEpisode > 1) return true;
+    final currIndex = _seasons.indexWhere((s) => s.season == _currentSeason);
+    return currIndex > 0;
+  }
+
+  bool get _hasNextEpisode {
+    if (!_isSeries) return false;
+    final currSeason = _seasons.firstWhere(
+      (s) => s.season == _currentSeason,
+      orElse: () => MovieboxSeason(season: _currentSeason, episodeCount: 1),
+    );
+    if (_currentEpisode < currSeason.episodeCount) return true;
+    final currIndex = _seasons.indexWhere((s) => s.season == _currentSeason);
+    return currIndex >= 0 && currIndex < _seasons.length - 1;
+  }
+
+  void _playPreviousEpisode() {
+    if (!_hasPreviousEpisode || _isSwitchingEpisode) return;
+    if (_currentEpisode > 1) {
+      _switchToEpisode(season: _currentSeason, episode: _currentEpisode - 1);
+    } else {
+      final currIndex = _seasons.indexWhere((s) => s.season == _currentSeason);
+      if (currIndex > 0) {
+        final prevSeason = _seasons[currIndex - 1];
+        _switchToEpisode(
+          season: prevSeason.season,
+          episode: prevSeason.episodeCount,
+        );
+      }
+    }
+  }
+
+  void _playNextEpisode() {
+    if (!_hasNextEpisode || _isSwitchingEpisode) return;
+    final currSeason = _seasons.firstWhere(
+      (s) => s.season == _currentSeason,
+      orElse: () => MovieboxSeason(season: _currentSeason, episodeCount: 1),
+    );
+    if (_currentEpisode < currSeason.episodeCount) {
+      _switchToEpisode(season: _currentSeason, episode: _currentEpisode + 1);
+    } else {
+      final currIndex = _seasons.indexWhere((s) => s.season == _currentSeason);
+      if (currIndex >= 0 && currIndex < _seasons.length - 1) {
+        final nextSeason = _seasons[currIndex + 1];
+        _switchToEpisode(season: nextSeason.season, episode: 1);
+      }
+    }
+  }
+
+  Future<void> _switchToEpisode({
+    required int season,
+    required int episode,
+  }) async {
+    if (_isSwitchingEpisode) return;
+    setState(() {
+      _isSwitchingEpisode = true;
+      _showEpisodesDrawer = false;
+      _showControls = false;
+      _currentSeason = season;
+      _currentEpisode = episode;
+    });
+
+    _hideTimer?.cancel();
+    final oldController = _controller;
+    _controller = null;
+    await oldController?.dispose();
+
+    try {
+      final streams = await MovieboxService.getStreams(
+        widget.subjectId,
+        season: season,
+        episode: episode,
+        detailPath: widget.detailPath,
+      );
+
+      var playable = streams.where((s) => s.isMp4 && s.url.isNotEmpty).toList();
+      final fullLength = playable
+          .where((s) => s.durationSec == null || s.durationSec! > 120)
+          .toList();
+      if (fullLength.isNotEmpty) playable = fullLength;
+
+      if (!mounted) return;
+
+      if (playable.isEmpty) {
+        setState(() {
+          _isSwitchingEpisode = false;
+          _error = 'Season $season Episode $episode stream is temporarily unavailable.';
+        });
+        return;
+      }
+
+      setState(() {
+        _currentStreams = playable;
+        _streamIndex = 0;
+        _isSwitchingEpisode = false;
+        _isInitializing = true;
+        _error = null;
+        _captions = [];
+        _cues = [];
+        _selectedCaption = null;
+      });
+
+      _sortStreams();
+      _loadCaptions();
+      await _initController(_currentStreams.first);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSwitchingEpisode = false;
+        _error = 'Failed to load Season $season Episode $episode: $e';
+      });
+    }
   }
 
   Future<void> _bootstrapSubtitles() async {
@@ -73,10 +240,10 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     await _loadCaptions();
   }
 
-  List<MovieboxStream> get _streams => widget.streams;
+  List<MovieboxStream> get _streams => _currentStreams;
 
   void _sortStreams() {
-    widget.streams.sort((a, b) {
+    _currentStreams.sort((a, b) {
       final q = b.qualityValue.compareTo(a.qualityValue);
       if (q != 0) return q;
       final d = (b.durationSec ?? 0).compareTo(a.durationSec ?? 0);
@@ -105,8 +272,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     try {
       final caps = await MovieboxService.getCaptions(
         widget.subjectId,
-        season: widget.season,
-        episode: widget.episode,
+        season: _currentSeason,
+        episode: _currentEpisode,
       );
       if (!mounted) return;
       setState(() => _captions = caps);
@@ -337,17 +504,25 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
-        onTap: _toggleControls,
+        onTap: () {
+          if (_showEpisodesDrawer) {
+            setState(() => _showEpisodesDrawer = false);
+            return;
+          }
+          _toggleControls();
+        },
         child: Stack(
           fit: StackFit.expand,
           children: [
             _buildVideoLayer(),
-            if (_showControls) _buildTopBar(),
-            if (_showControls) _buildCenterControls(),
-            if (_showControls) _buildBottomBar(),
+            if (_showControls && !_showEpisodesDrawer) _buildTopBar(),
+            if (_showControls && !_showEpisodesDrawer) _buildCenterControls(),
+            if (_showControls && !_showEpisodesDrawer) _buildBottomBar(),
             if (_isInitializing) _buildLoadingOverlay(),
+            if (_isSwitchingEpisode) _buildEpisodeSwitchingOverlay(),
             if (_error != null) _buildErrorOverlay(),
             _buildSubtitleOverlay(),
+            if (_showEpisodesDrawer) _buildEpisodesDrawer(),
           ],
         ),
       ),
@@ -364,6 +539,34 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       child: AspectRatio(
         aspectRatio: controller.value.aspectRatio,
         child: VideoPlayer(controller),
+      ),
+    );
+  }
+
+  Widget _buildEpisodeSwitchingOverlay() {
+    return Container(
+      color: Colors.black.withOpacity(0.85),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: ThemeService.crimson, strokeWidth: 3),
+            const SizedBox(height: 18),
+            Text(
+              'Switching to Season $_currentSeason • Episode $_currentEpisode...',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Streaming from MovieBox CDN...',
+              style: TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -457,7 +660,12 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  if (widget.subtitle != null)
+                  if (_isSeries)
+                    Text(
+                      'Season $_currentSeason • Episode $_currentEpisode',
+                      style: const TextStyle(color: Colors.white70, fontSize: 10.5),
+                    )
+                  else if (widget.subtitle != null)
                     Text(
                       widget.subtitle!,
                       style: const TextStyle(color: Colors.white54, fontSize: 10.5),
@@ -465,6 +673,18 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                 ],
               ),
             ),
+            if (_isSeries)
+              IconButton(
+                icon: const Icon(Icons.video_library_outlined, color: Colors.white),
+                tooltip: 'Episodes',
+                onPressed: () {
+                  _hideTimer?.cancel();
+                  setState(() {
+                    _showEpisodesDrawer = true;
+                    _selectedDrawerSeason = _currentSeason;
+                  });
+                },
+              ),
             IconButton(
               icon: Icon(
                 _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
@@ -483,12 +703,21 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          if (_isSeries) ...[
+            _circleButton(
+              icon: Icons.skip_previous,
+              size: 22,
+              onTap: _hasPreviousEpisode ? _playPreviousEpisode : null,
+              enabled: _hasPreviousEpisode,
+            ),
+            const SizedBox(width: 16),
+          ],
           _circleButton(
             icon: Icons.replay_10,
             size: 22,
             onTap: () => _seekRelative(-10),
           ),
-          const SizedBox(width: 26),
+          const SizedBox(width: 22),
           GestureDetector(
             onTap: _togglePlay,
             child: Container(
@@ -506,29 +735,49 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
               ),
             ),
           ),
-          const SizedBox(width: 26),
+          const SizedBox(width: 22),
           _circleButton(
             icon: Icons.forward_10,
             size: 22,
             onTap: () => _seekRelative(10),
           ),
+          if (_isSeries) ...[
+            const SizedBox(width: 16),
+            _circleButton(
+              icon: Icons.skip_next,
+              size: 22,
+              onTap: _hasNextEpisode ? _playNextEpisode : null,
+              enabled: _hasNextEpisode,
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _circleButton({required IconData icon, required double size, required VoidCallback onTap}) {
+  Widget _circleButton({
+    required IconData icon,
+    required double size,
+    VoidCallback? onTap,
+    bool enabled = true,
+  }) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
       child: Container(
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.45),
+          color: enabled ? Colors.black.withOpacity(0.45) : Colors.black.withOpacity(0.18),
           shape: BoxShape.circle,
-          border: Border.all(color: Colors.white12),
+          border: Border.all(
+            color: enabled ? Colors.white12 : Colors.white.withOpacity(0.04),
+          ),
         ),
-        child: Icon(icon, color: Colors.white, size: size),
+        child: Icon(
+          icon,
+          color: enabled ? Colors.white : Colors.white24,
+          size: size,
+        ),
       ),
     );
   }
@@ -622,6 +871,20 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                     ),
                   ),
                 ),
+                if (_isSeries) ...[
+                  _actionChip(
+                    icon: Icons.video_collection_outlined,
+                    label: 'S$_currentSeason:E$_currentEpisode',
+                    onTap: () {
+                      _hideTimer?.cancel();
+                      setState(() {
+                        _showEpisodesDrawer = true;
+                        _selectedDrawerSeason = _currentSeason;
+                      });
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 _actionChip(
                   icon: Icons.high_quality_outlined,
                   label: 'Quality',
@@ -637,6 +900,223 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildEpisodesDrawer() {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final drawerWidth = isLandscape ? 380.0 : MediaQuery.of(context).size.width * 0.88;
+
+    final selectedSeasonObj = _seasons.firstWhere(
+      (s) => s.season == _selectedDrawerSeason,
+      orElse: () => MovieboxSeason(season: _selectedDrawerSeason, episodeCount: 1),
+    );
+
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          // Dismiss scrim
+          GestureDetector(
+            onTap: () => setState(() => _showEpisodesDrawer = false),
+            child: Container(color: Colors.black.withOpacity(0.65)),
+          ),
+          // Drawer panel sliding from right
+          Align(
+            alignment: Alignment.centerRight,
+            child: Container(
+              width: drawerWidth,
+              height: double.infinity,
+              decoration: BoxDecoration(
+                color: ThemeService.surface,
+                border: const Border(left: BorderSide(color: Colors.white12, width: 1)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.55),
+                    blurRadius: 18,
+                    offset: const Offset(-5, 0),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.video_library_rounded,
+                            color: ThemeService.crimson,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text(
+                                  'Episodes & Seasons',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                if (_currentSeason > 0 && _currentEpisode > 0)
+                                  Text(
+                                    'Playing: Season $_currentSeason • Ep $_currentEpisode',
+                                    style: const TextStyle(
+                                      color: ThemeService.crimson,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () => setState(() => _showEpisodesDrawer = false),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1, color: Colors.white12),
+
+                    // Season Chips (if multiple seasons)
+                    if (_seasons.length > 1) ...[
+                      SizedBox(
+                        height: 48,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          physics: const BouncingScrollPhysics(),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          itemCount: _seasons.length,
+                          itemBuilder: (context, index) {
+                            final season = _seasons[index];
+                            final isSelected = season.season == _selectedDrawerSeason;
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: GestureDetector(
+                                onTap: () => setState(() => _selectedDrawerSeason = season.season),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 160),
+                                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? ThemeService.crimson
+                                        : Colors.white.withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: isSelected ? ThemeService.crimson : Colors.white12,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    'Season ${season.season}',
+                                    style: TextStyle(
+                                      color: isSelected ? Colors.white : Colors.white70,
+                                      fontSize: 11.5,
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      const Divider(height: 1, color: Colors.white10),
+                    ],
+
+                    // Episodes Grid
+                    if (_isLoadingSeasons)
+                      const Expanded(
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: ThemeService.crimson,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      )
+                    else
+                      Expanded(
+                        child: GridView.builder(
+                          physics: const BouncingScrollPhysics(),
+                          padding: const EdgeInsets.all(12),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: isLandscape ? 4 : 4,
+                            childAspectRatio: 1.25,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: selectedSeasonObj.episodeCount,
+                          itemBuilder: (context, index) {
+                            final ep = index + 1;
+                            final isCurrent = _selectedDrawerSeason == _currentSeason &&
+                                ep == _currentEpisode;
+
+                            return GestureDetector(
+                              onTap: () {
+                                if (isCurrent) {
+                                  setState(() => _showEpisodesDrawer = false);
+                                  return;
+                                }
+                                _switchToEpisode(season: _selectedDrawerSeason, episode: ep);
+                              },
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 140),
+                                decoration: BoxDecoration(
+                                  color: isCurrent
+                                      ? ThemeService.crimson.withOpacity(0.24)
+                                      : Colors.white.withOpacity(0.06),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isCurrent ? ThemeService.crimson : Colors.white12,
+                                    width: isCurrent ? 1.5 : 1,
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      '$ep',
+                                      style: TextStyle(
+                                        color: isCurrent ? ThemeService.crimson : Colors.white,
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    if (isCurrent) ...[
+                                      const SizedBox(height: 2),
+                                      const Text(
+                                        'PLAYING',
+                                        style: TextStyle(
+                                          color: ThemeService.crimson,
+                                          fontSize: 7.5,
+                                          fontWeight: FontWeight.w900,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

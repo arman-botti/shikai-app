@@ -132,6 +132,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             subjectId: subjectId,
             season: season,
             episode: episode,
+            seasons: _seasons,
+            detailPath: detailPath,
           ),
         ),
       );
