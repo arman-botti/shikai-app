@@ -10,6 +10,7 @@ import 'package:shikai_app/screens/schedule_screen.dart';
 import 'package:shikai_app/screens/discover_screen.dart';
 import 'package:shikai_app/screens/manga_screen.dart';
 import 'package:shikai_app/screens/manga_detail_screen.dart';
+import 'package:shikai_app/screens/movies_screen.dart';
 import 'package:shikai_app/screens/library_screen.dart';
 import 'package:shikai_app/services/manga_service.dart';
 import 'package:shikai_app/widgets/shikai_network_image.dart';
@@ -412,6 +413,18 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
     }
   }
 
+  void _openMovies() async {
+    _spotlightTimer?.cancel();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const MoviesScreen()),
+    );
+    if (mounted) {
+      setState(() => _currentIndex = 0);
+      _startSpotlightTimer();
+    }
+  }
+
   void _openDiscover({String? genre, String? format}) async {
     _spotlightTimer?.cancel();
     await Navigator.push(
@@ -749,6 +762,8 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                   _openSchedule();
                 } else if (index == 4) {
                   _openLibrary();
+                } else if (index == 5) {
+                  _openMovies();
                 }
               },
                   items: const [
@@ -757,6 +772,7 @@ class _ShikaiHomeScreenState extends State<ShikaiHomeScreen> {
                     BottomNavigationBarItem(icon: Icon(Icons.auto_stories_outlined), activeIcon: Icon(Icons.auto_stories), label: "Manga"),
                     BottomNavigationBarItem(icon: Icon(Icons.calendar_month_outlined), activeIcon: Icon(Icons.calendar_month), label: "Schedule"),
                     BottomNavigationBarItem(icon: Icon(Icons.video_library_outlined), activeIcon: Icon(Icons.video_library), label: "Library"),
+                    BottomNavigationBarItem(icon: Icon(Icons.local_movies_outlined), activeIcon: Icon(Icons.local_movies), label: "Movies"),
                   ],
                 ),
               ),
