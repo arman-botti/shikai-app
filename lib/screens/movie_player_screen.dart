@@ -721,133 +721,249 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   }
 
   void _showQualitySheet() {
+    final mediaQuery = MediaQuery.of(context);
+    final maxHeight = mediaQuery.size.height *
+        (mediaQuery.orientation == Orientation.landscape ? 0.85 : 0.65);
+
     showModalBottomSheet(
       context: context,
-      backgroundColor: ThemeService.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Text(
-                'Video Quality',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        decoration: const BoxDecoration(
+          color: ThemeService.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            ...List.generate(_streams.length, (index) {
-              final stream = _streams[index];
-              final selected = index == _streamIndex;
-              return ListTile(
-                dense: true,
-                leading: Icon(
-                  selected ? Icons.check_circle : Icons.circle_outlined,
-                  color: selected ? ThemeService.crimson : ThemeService.textDarkMuted,
-                  size: 20,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Video Quality',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
                 ),
-                title: Text(
-                  stream.quality,
-                  style: TextStyle(
-                    color: selected ? Colors.white : Colors.white70,
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                  ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: _streams.length,
+                  itemBuilder: (context, index) {
+                    final stream = _streams[index];
+                    final selected = index == _streamIndex;
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(
+                        selected ? Icons.check_circle : Icons.circle_outlined,
+                        color: selected ? ThemeService.crimson : ThemeService.textDarkMuted,
+                        size: 20,
+                      ),
+                      title: Text(
+                        stream.quality,
+                        style: TextStyle(
+                          color: selected ? Colors.white : Colors.white70,
+                          fontSize: 13,
+                          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: Text(
+                        [
+                          if (stream.sizeMb > 0) '${stream.sizeMb.toStringAsFixed(0)} MB',
+                          if (stream.codec != null) stream.codec!.toUpperCase(),
+                          if (stream.durationSec != null)
+                            _formatDuration(Duration(seconds: stream.durationSec!)),
+                        ].join(' • '),
+                        style: const TextStyle(
+                          color: ThemeService.textDarkMuted,
+                          fontSize: 10.5,
+                        ),
+                      ),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _switchQuality(index);
+                      },
+                    );
+                  },
                 ),
-                subtitle: Text(
-                  [
-                    if (stream.sizeMb > 0) '${stream.sizeMb.toStringAsFixed(0)} MB',
-                    if (stream.codec != null) stream.codec!.toUpperCase(),
-                    if (stream.durationSec != null) _formatDuration(Duration(seconds: stream.durationSec!)),
-                  ].join(' • '),
-                  style: const TextStyle(color: ThemeService.textDarkMuted, fontSize: 10.5),
-                ),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _switchQuality(index);
-                },
-              );
-            }),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   void _showSubtitleSheet() {
+    final mediaQuery = MediaQuery.of(context);
+    final maxHeight = mediaQuery.size.height *
+        (mediaQuery.orientation == Orientation.landscape ? 0.85 : 0.65);
+
     showModalBottomSheet(
       context: context,
-      backgroundColor: ThemeService.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Text(
-                'Subtitles',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-              ),
-            ),
-            if (_isLoadingSubtitles)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: CircularProgressIndicator(color: ThemeService.crimson, strokeWidth: 2),
-              )
-            else ...[
-              ListTile(
-                dense: true,
-                leading: Icon(
-                  _selectedCaption == null ? Icons.check_circle : Icons.circle_outlined,
-                  color: _selectedCaption == null ? ThemeService.crimson : ThemeService.textDarkMuted,
-                  size: 20,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        decoration: const BoxDecoration(
+          color: ThemeService.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                title: const Text('Off', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _selectCaption(null);
-                },
               ),
-              if (_captions.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Subtitles',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              if (_isLoadingSubtitles)
                 const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Text(
-                    'No subtitles available',
-                    style: TextStyle(color: ThemeService.textMuted, fontSize: 12),
+                  padding: EdgeInsets.all(32),
+                  child: Center(
+                    child: CircularProgressIndicator(
+                      color: ThemeService.crimson,
+                      strokeWidth: 2,
+                    ),
+                  ),
+                )
+              else if (_captions.isEmpty && _selectedCaption == null)
+                const Padding(
+                  padding: EdgeInsets.all(28),
+                  child: Center(
+                    child: Text(
+                      'No subtitles available',
+                      style: TextStyle(color: ThemeService.textMuted, fontSize: 13),
+                    ),
                   ),
                 )
               else
-                ..._captions.map(
-                  (cap) => ListTile(
-                    dense: true,
-                    leading: Icon(
-                      _selectedCaption?.url == cap.url ? Icons.check_circle : Icons.circle_outlined,
-                      color: _selectedCaption?.url == cap.url
-                          ? ThemeService.crimson
-                          : ThemeService.textDarkMuted,
-                      size: 20,
-                    ),
-                    title: Text(
-                      cap.language,
-                      style: const TextStyle(color: Colors.white70, fontSize: 13),
-                    ),
-                    trailing: Text(
-                      cap.code.toUpperCase(),
-                      style: const TextStyle(color: ThemeService.textDarkMuted, fontSize: 10),
-                    ),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _selectCaption(cap);
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    itemCount: _captions.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        final isOff = _selectedCaption == null;
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            isOff ? Icons.check_circle : Icons.circle_outlined,
+                            color: isOff ? ThemeService.crimson : ThemeService.textDarkMuted,
+                            size: 20,
+                          ),
+                          title: const Text(
+                            'Off',
+                            style: TextStyle(color: Colors.white70, fontSize: 13),
+                          ),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            _selectCaption(null);
+                          },
+                        );
+                      }
+
+                      final cap = _captions[index - 1];
+                      final isSelected = _selectedCaption?.url == cap.url;
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(
+                          isSelected ? Icons.check_circle : Icons.circle_outlined,
+                          color: isSelected
+                              ? ThemeService.crimson
+                              : ThemeService.textDarkMuted,
+                          size: 20,
+                        ),
+                        title: Text(
+                          cap.language,
+                          style: TextStyle(
+                            color: isSelected ? Colors.white : Colors.white70,
+                            fontSize: 13,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                        trailing: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            cap.code.toUpperCase(),
+                            style: const TextStyle(
+                              color: ThemeService.textDarkMuted,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _selectCaption(cap);
+                        },
+                      );
                     },
                   ),
                 ),
             ],
-          ],
+          ),
         ),
       ),
     );

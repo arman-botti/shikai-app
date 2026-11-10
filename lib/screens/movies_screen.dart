@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shikai_app/models/moviebox_media.dart';
 import 'package:shikai_app/screens/movie_detail_screen.dart';
 import 'package:shikai_app/screens/movie_search_screen.dart';
+import 'package:shikai_app/screens/movie_section_screen.dart';
 import 'package:shikai_app/services/moviebox_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
 import 'package:shikai_app/widgets/shikai_network_image.dart';
@@ -106,6 +107,20 @@ class _MoviesScreenState extends State<MoviesScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const MovieSearchScreen()),
+    );
+  }
+
+  void _openSection(MovieboxHomeSection section) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MovieSectionScreen(
+          title: section.title,
+          initialItems: section.items,
+          isTrending: section.title.toLowerCase().contains('trend') ||
+              section.type.toLowerCase().contains('rank'),
+        ),
+      ),
     );
   }
 
@@ -521,16 +536,50 @@ class _MoviesScreenState extends State<MoviesScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              section.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.1,
-              ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Text(
+                    section.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _openSection(section),
+                  behavior: HitTestBehavior.opaque,
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 8, top: 4, bottom: 4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'View More',
+                          style: TextStyle(
+                            color: ThemeService.crimson,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(width: 3),
+                        Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: ThemeService.crimson,
+                          size: 11,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 11),

@@ -148,6 +148,37 @@ class MovieboxService {
         .toList();
   }
 
+  static Future<List<MovieboxItem>> getRankingList({
+    int page = 1,
+    int perPage = 20,
+    String categoryType = '4516404531735022304',
+  }) async {
+    try {
+      final url =
+          'https://apig.inmoviebox.com/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=$categoryType&page=$page&perPage=$perPage';
+      final res = await _client
+          .get(Uri.parse(url), headers: _signedHeaders('GET', url))
+          .timeout(const Duration(seconds: 15));
+
+      if (res.statusCode != 200) return [];
+
+      final root = _jsonDecode(res.body);
+      final data = root['data'];
+      if (data is! Map) return [];
+
+      final rawItems = data['items'] ?? data['list'] ?? data['subjects'];
+      if (rawItems is! List) return [];
+
+      return rawItems
+          .whereType<Map>()
+          .map((e) => MovieboxItem.fromJson(Map<String, dynamic>.from(e)))
+          .where((e) => e.id.isNotEmpty && e.title.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   static Future<MovieboxDetail> getDetail(String subjectId) async {
     final root = await _apiRequest(
       'GET',
