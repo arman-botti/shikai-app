@@ -1,9 +1,11 @@
 package biz.shikai.app
 
+import android.app.DownloadManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.view.Display
 import android.view.WindowManager
 import androidx.core.content.FileProvider
@@ -91,6 +93,43 @@ class MainActivity: FlutterActivity() {
                         }
                     } else {
                         result.success(false)
+                    }
+                }
+                "downloadFile" -> {
+                    val url = call.argument<String>("url")
+                    val title = call.argument<String>("title") ?: "Shikai Download"
+                    val filename = call.argument<String>("filename") ?: "video.mp4"
+                    val headers = call.argument<Map<String, String>>("headers")
+
+                    if (url.isNullOrEmpty()) {
+                        result.error("INVALID_URL", "Download URL cannot be null or empty", null)
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                        val cleanFilename = filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                        val request = DownloadManager.Request(Uri.parse(url)).apply {
+                            setTitle(title)
+                            setDescription("Downloading $cleanFilename")
+                            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Shikai/$cleanFilename")
+                            setAllowedOverMetered(true)
+                            setAllowedOverRoaming(true)
+                            headers?.forEach { (k, v) -> addRequestHeader(k, v) }
+                        }
+                        val downloadId = dm.enqueue(request)
+                        result.success(downloadId)
+                    } catch (e: Exception) {
+                        try {
+                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(browserIntent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.error("DOWNLOAD_ERROR", e.localizedMessage, null)
+                        }
                     }
                 }
                 else -> result.notImplemented()

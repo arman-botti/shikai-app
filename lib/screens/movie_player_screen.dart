@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shikai_app/models/moviebox_media.dart';
+import 'package:shikai_app/services/download_service.dart';
 import 'package:shikai_app/services/moviebox_service.dart';
 import 'package:shikai_app/services/subtitle_service.dart';
 import 'package:shikai_app/services/theme_service.dart';
@@ -672,6 +673,14 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                     ),
                 ],
               ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.download_rounded, color: Colors.white),
+              tooltip: 'Download',
+              onPressed: () {
+                _hideTimer?.cancel();
+                _showDownloadPicker();
+              },
             ),
             if (_isSeries)
               IconButton(
@@ -1447,5 +1456,215 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         ),
       ),
     );
+  }
+
+  void _showDownloadPicker() {
+    if (_streams.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No downloadable streams available'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+    final maxHeight =
+        MediaQuery.of(context).size.height * (isLandscape ? 0.85 : 0.65);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        decoration: const BoxDecoration(
+          color: ThemeService.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.download_rounded,
+                          color: ThemeService.crimson,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Download Video',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            if (_isSeries)
+                              Text(
+                                'Season $_currentSeason • Episode $_currentEpisode',
+                                style: const TextStyle(
+                                  color: ThemeService.textMuted,
+                                  fontSize: 11,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: _streams.length,
+                  itemBuilder: (context, index) {
+                    final stream = _streams[index];
+                    final isCurrent = index == _streamIndex;
+                    final sizeText = stream.sizeMb > 1024
+                        ? '${(stream.sizeMb / 1024).toStringAsFixed(1)} GB'
+                        : (stream.sizeMb > 0
+                            ? '${stream.sizeMb.toStringAsFixed(0)} MB'
+                            : '');
+
+                    return ListTile(
+                      dense: true,
+                      leading: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: isCurrent
+                              ? ThemeService.crimson.withOpacity(0.2)
+                              : Colors.white.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: isCurrent
+                                ? ThemeService.crimson
+                                : Colors.white12,
+                          ),
+                        ),
+                        child: Text(
+                          stream.quality,
+                          style: TextStyle(
+                            color:
+                                isCurrent ? ThemeService.crimson : Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      title: Text(
+                        sizeText.isNotEmpty ? sizeText : 'Direct MP4',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        [
+                          if (stream.codec != null)
+                            stream.codec!.toUpperCase(),
+                          if (isCurrent) 'Currently Playing',
+                        ].join(' • '),
+                        style: const TextStyle(
+                          color: ThemeService.textDarkMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(
+                          Icons.file_download_outlined,
+                          color: Colors.white70,
+                          size: 22,
+                        ),
+                        onPressed: () => _downloadStream(stream),
+                      ),
+                      onTap: () => _downloadStream(stream),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _downloadStream(MovieboxStream stream) async {
+    Navigator.pop(context);
+
+    final epLabel =
+        _isSeries ? '_S${_currentSeason}E$_currentEpisode' : '';
+    final filename = '${widget.title}${epLabel}_${stream.quality}.mp4';
+    final downloadTitle = _isSeries
+        ? '${widget.title} S${_currentSeason}E$_currentEpisode (${stream.quality})'
+        : '${widget.title} (${stream.quality})';
+
+    final success = await DownloadService.startDownload(
+      url: stream.url,
+      title: downloadTitle,
+      filename: filename,
+      headers: stream.headers,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF1E293B),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10)),
+          content: Row(
+            children: [
+              const Icon(Icons.download_done_rounded,
+                  color: Color(0xFF10B981), size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  success
+                      ? 'Download started: $filename\nCheck notification bar!'
+                      : 'Opened download stream in external downloader',
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 12.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
   }
 }
